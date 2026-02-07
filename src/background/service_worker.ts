@@ -1,11 +1,18 @@
 import JSZip from 'jszip';
-import { extFromMime } from '../utils/url';
 
+const TTL = 24 * 60 * 60 * 1000;
 const sizeCache = new Map<string, { bytes?: number; at: number }>();
+const injectedTabs = new Set<number>();
 
 async function resolveSize(url: string): Promise<{ bytes?: number; unknown?: boolean }> {
-  const cached = sizeCache.get(url);
-  if (cached && Date.now() - cached.at < 24 * 60 * 60 * 1000) return cached;
+  const cachedMem = sizeCache.get(url);
+  if (cachedMem && Date.now() - cachedMem.at < TTL) return cachedMem;
+
+  const cachedStorage = (await chrome.storage.local.get(`size:${url}`))[`size:${url}`] as { bytes?: number; at: number } | undefined;
+  if (cachedStorage && Date.now() - cachedStorage.at < TTL) {
+    sizeCache.set(url, cachedStorage);
+    return cachedStorage;
+  }
 
   try {
     const head = await fetch(url, { method: 'HEAD' });
@@ -13,7 +20,7 @@ async function resolveSize(url: string): Promise<{ bytes?: number; unknown?: boo
     if (length > 0) {
       const res = { bytes: length, at: Date.now() };
       sizeCache.set(url, res);
-      chrome.storage.local.set({ [`size:${url}`]: res });
+      await chrome.storage.local.set({ [`size:${url}`]: res });
       return res;
     }
   } catch {
@@ -24,7 +31,7 @@ async function resolveSize(url: string): Promise<{ bytes?: number; unknown?: boo
     const data = await fetch(url).then((r) => r.arrayBuffer());
     const res = { bytes: data.byteLength, at: Date.now() };
     sizeCache.set(url, res);
-    chrome.storage.local.set({ [`size:${url}`]: res });
+    await chrome.storage.local.set({ [`size:${url}`]: res });
     return res;
   } catch {
     return { unknown: true };
@@ -32,19 +39,39 @@ async function resolveSize(url: string): Promise<{ bytes?: number; unknown?: boo
 }
 
 async function fetchBytes(url: string): Promise<ArrayBuffer> {
+  if (url.startsWith('data:')) {
+    const response = await fetch(url);
+    return response.arrayBuffer();
+  }
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
   return response.arrayBuffer();
 }
 
-async function downloadZip(items: Array<{ filename: string; bytes: ArrayBuffer }>, zipName: string): Promise<number> {
+async function downloadZip(items: Array<{ filename: string; bytes: number[] }>, zipName: string): Promise<number> {
   const zip = new JSZip();
   for (const item of items) {
-    zip.file(item.filename, item.bytes);
+    zip.file(item.filename, new Uint8Array(item.bytes));
   }
   const blob = await zip.generateAsync({ type: 'blob' });
   const url = URL.createObjectURL(blob);
-  return chrome.downloads.download({ url, filename: zipName, saveAs: false });
+  const id = await chrome.downloads.download({ url, filename: zipName, saveAs: false });
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  return id;
+}
+
+async function toggleSelector(tabId: number): Promise<{ active: boolean }> {
+  if (!injectedTabs.has(tabId)) {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['content/selectorOverlay.js'] });
+    injectedTabs.add(tabId);
+  }
+  try {
+    return await chrome.tabs.sendMessage(tabId, { type: 'TOGGLE_SELECTOR' });
+  } catch {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['content/selectorOverlay.js'] });
+    injectedTabs.add(tabId);
+    return chrome.tabs.sendMessage(tabId, { type: 'TOGGLE_SELECTOR' });
+  }
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -56,7 +83,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'FETCH_BYTES') {
       try {
         const bytes = await fetchBytes(message.url);
-        sendResponse({ ok: true, bytes });
+        sendResponse({ ok: true, bytes: Array.from(new Uint8Array(bytes)) });
       } catch (error) {
         sendResponse({ ok: false, error: (error as Error).message });
       }
@@ -68,18 +95,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
     if (message.type === 'DOWNLOAD_ZIP') {
-      const id = await downloadZip(message.items, message.zipName || `MadCapture.${extFromMime('application/zip')}`);
+      const id = await downloadZip(message.items, message.zipName || `MadCapture-${Date.now()}.zip`);
       sendResponse({ ok: true, id });
       return;
     }
     if (message.type === 'TOGGLE_SELECTOR_FOR_TAB') {
       const tabId = sender.tab?.id ?? (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
       if (!tabId) throw new Error('No active tab id');
-      await chrome.scripting.executeScript({ target: { tabId }, files: ['content/selectorOverlay.js'] });
-      const result = await chrome.tabs.sendMessage(tabId, { type: 'TOGGLE_SELECTOR' });
+      const result = await toggleSelector(tabId);
       sendResponse(result);
       return;
     }
+    sendResponse({ ok: false, error: 'Unknown message' });
   })().catch((error) => sendResponse({ ok: false, error: (error as Error).message }));
   return true;
 });

@@ -31,11 +31,18 @@ function extractDataUrlMime(dataUrl: string): string {
   return match?.[1] ?? 'application/octet-stream';
 }
 
+async function maybeNudgeLazyLoad(root: Element): Promise<void> {
+  if (!(root instanceof HTMLElement)) return;
+  root.scrollIntoView({ block: 'center', inline: 'nearest' });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+}
+
 export async function extractImagesFromRoots(roots: Element[]): Promise<ExtractedImage[]> {
   const items: ExtractedImage[] = [];
   let idx = 0;
 
   for (const root of roots) {
+    await maybeNudgeLazyLoad(root);
     const all = [root, ...root.querySelectorAll('*')];
     for (const el of all) {
       if (el instanceof HTMLImageElement) items.push(...fromImg(el, idx++));
@@ -52,16 +59,12 @@ export async function extractImagesFromRoots(roots: Element[]): Promise<Extracte
       }
       if (el instanceof SVGElement) {
         const payload = new XMLSerializer().serializeToString(el);
-        const blob = new Blob([payload], { type: 'image/svg+xml' });
-        const url = URL.createObjectURL(blob);
-        items.push({ id: idFor(url, idx++), url, originType: 'inline-svg', isInlineSVG: true, filenameHint: 'inline.svg' });
+        const dataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(payload)}`;
+        items.push({ id: idFor(dataUrl, idx++), url: dataUrl, originType: 'inline-svg', isInlineSVG: true, isDataUrl: true, filenameHint: 'inline.svg' });
       }
       if (el instanceof HTMLCanvasElement) {
-        const blob: Blob | null = await new Promise((resolve) => el.toBlob(resolve));
-        if (blob) {
-          const url = URL.createObjectURL(blob);
-          items.push({ id: idFor(url, idx++), url, originType: 'canvas', isCanvas: true, width: el.width, height: el.height, filenameHint: 'canvas.png' });
-        }
+        const dataUrl = el.toDataURL('image/png');
+        items.push({ id: idFor(dataUrl, idx++), url: dataUrl, originType: 'canvas', isCanvas: true, isDataUrl: true, width: el.width, height: el.height, filenameHint: 'canvas.png' });
       }
       if (el instanceof HTMLVideoElement && el.poster) {
         const url = canonicalizeUrl(el.poster);
@@ -97,7 +100,7 @@ export async function extractImagesFromRoots(roots: Element[]): Promise<Extracte
   return items
     .map((item) => {
       if (item.url.startsWith('data:')) {
-        return { ...item, isDataUrl: true, originType: 'data-url', filenameHint: `data.${extractDataUrlMime(item.url).split('/')[1] || 'bin'}` };
+        return { ...item, isDataUrl: true, originType: 'data-url', filenameHint: item.filenameHint ?? `data.${extractDataUrlMime(item.url).split('/')[1] || 'bin'}` };
       }
       return item;
     })
