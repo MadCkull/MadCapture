@@ -12,10 +12,10 @@ function safeName(input: string): string {
   return input.replace(/[\\/:*?"<>|]/g, '_').slice(0, 120);
 }
 
-export function buildFilenames(count: number, options: NamingOptions, hints: string[], ext: string): string[] {
+export function buildFilenames(count: number, options: NamingOptions, ext: string): string[] {
+  const prefix = options.prefix.trim() || 'Pic';
   return new Array(count).fill(0).map((_, i) => {
-    const hint = safeName(hints[i] || 'Pic');
-    const tokenName = options.includeHint ? hint : 'Pic';
-    return renderFilename(options.template, tokenName, options.startIndex + i, ext, options.zeroPad);
+    return `${prefix} (${i + 1}).${ext}`;
   });
 }
+

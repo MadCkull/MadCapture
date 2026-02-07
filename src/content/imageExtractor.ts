@@ -42,11 +42,17 @@ export async function extractImagesFromRoots(roots: Element[]): Promise<Extracte
   let idx = 0;
 
   for (const root of roots) {
-    await maybeNudgeLazyLoad(root);
+    if (root.tagName.toLowerCase() === 'img') {
+        items.push(...fromImg(root as HTMLImageElement, idx++));
+    }
+    
     const all = [root, ...root.querySelectorAll('*')];
     for (const el of all) {
       if (el instanceof HTMLImageElement) items.push(...fromImg(el, idx++));
       if (el instanceof HTMLPictureElement) {
+        const img = el.querySelector('img');
+        if (img) items.push(...fromImg(img, idx++));
+        
         for (const source of el.querySelectorAll('source')) {
           const srcset = source.srcset || source.getAttribute('srcset') || '';
           parseSrcset(srcset).forEach((c) => items.push({
@@ -58,24 +64,37 @@ export async function extractImagesFromRoots(roots: Element[]): Promise<Extracte
         }
       }
       if (el instanceof SVGElement) {
-        const payload = new XMLSerializer().serializeToString(el);
-        const dataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(payload)}`;
-        items.push({ id: idFor(dataUrl, idx++), url: dataUrl, originType: 'inline-svg', isInlineSVG: true, isDataUrl: true, filenameHint: 'inline.svg' });
+        try {
+          // Clone to avoid modifying the original if we need to do anything
+          const clone = el.cloneNode(true) as SVGElement;
+          if (!clone.getAttribute('xmlns')) clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+          const payload = new XMLSerializer().serializeToString(clone);
+          const dataUrl = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(payload)))}`;
+          items.push({ id: idFor(dataUrl, idx++), url: dataUrl, originType: 'inline-svg', isInlineSVG: true, isDataUrl: true, filenameHint: 'vector.svg' });
+        } catch (e) {
+          console.warn('SVG extraction failed', e);
+        }
       }
       if (el instanceof HTMLCanvasElement) {
-        const dataUrl = el.toDataURL('image/png');
-        items.push({ id: idFor(dataUrl, idx++), url: dataUrl, originType: 'canvas', isCanvas: true, isDataUrl: true, width: el.width, height: el.height, filenameHint: 'canvas.png' });
+        try {
+          const dataUrl = el.toDataURL('image/png');
+          items.push({ id: idFor(dataUrl, idx++), url: dataUrl, originType: 'canvas', isCanvas: true, isDataUrl: true, width: el.width, height: el.height, filenameHint: 'canvas.png' });
+        } catch (e) {
+            console.warn('Canvas extraction failed', e);
+        }
       }
-      if (el instanceof HTMLVideoElement && el.poster) {
-        const url = canonicalizeUrl(el.poster);
-        items.push({ id: idFor(url, idx++), url, originType: 'video-poster', filenameHint: filenameFromUrl(url) });
-      }
-      if (el instanceof HTMLElement) {
-        const bg = getComputedStyle(el).getPropertyValue('background-image');
-        extractBackgroundImageUrls(bg).forEach((url) => {
-          const abs = canonicalizeUrl(url);
-          items.push({ id: idFor(abs, idx++), url: abs, originType: 'css-background', filenameHint: filenameFromUrl(abs) });
-        });
+      // CSS Backgrounds - check parents too if they have bg
+      let curr: Element | null = el;
+      while (curr && curr !== root.parentElement) {
+          const bg = getComputedStyle(curr).getPropertyValue('background-image');
+          if (bg && bg !== 'none') {
+            extractBackgroundImageUrls(bg).forEach((url) => {
+                const abs = canonicalizeUrl(url);
+                items.push({ id: idFor(abs, idx++), url: abs, originType: 'css-background', filenameHint: filenameFromUrl(abs) });
+            });
+          }
+          if (curr === root) break;
+          curr = curr.parentElement;
       }
 
       for (const attr of LAZY_ATTRS) {
@@ -98,9 +117,23 @@ export async function extractImagesFromRoots(roots: Element[]): Promise<Extracte
   }
 
   return items
+    .filter((item) => {
+      // Exclude SVGs (user said exclude .svg and similar things)
+      if (item.url.toLowerCase().endsWith('.svg') || item.url.includes('svg+xml')) return false;
+      
+      // Filter out invalid/empty data URLs or very small icons
+      if (item.url.startsWith('data:')) {
+          if (item.url.length < 100) return false;
+          const mime = extractDataUrlMime(item.url);
+          if (mime.includes('svg')) return false;
+      }
+      return true;
+    })
     .map((item) => {
       if (item.url.startsWith('data:')) {
-        return { ...item, isDataUrl: true, originType: 'data-url', filenameHint: item.filenameHint ?? `data.${extractDataUrlMime(item.url).split('/')[1] || 'bin'}` };
+        const mime = extractDataUrlMime(item.url);
+        const ext = mime.split('/')[1]?.split('+')[0] || 'bin';
+        return { ...item, isDataUrl: true, originType: 'data-url', filenameHint: item.filenameHint ?? `data.${ext}` };
       }
       return item;
     })

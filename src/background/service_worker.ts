@@ -40,8 +40,9 @@ async function resolveSize(url: string): Promise<{ bytes?: number; unknown?: boo
 
 async function fetchBytes(url: string): Promise<ArrayBuffer> {
   if (url.startsWith('data:')) {
-    const response = await fetch(url);
-    return response.arrayBuffer();
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('Failed to fetch data URL');
+    return res.arrayBuffer();
   }
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
@@ -51,14 +52,31 @@ async function fetchBytes(url: string): Promise<ArrayBuffer> {
 async function downloadZip(items: Array<{ filename: string; bytes: number[] }>, zipName: string): Promise<number> {
   const zip = new JSZip();
   for (const item of items) {
-    zip.file(item.filename, new Uint8Array(item.bytes));
+    // Ensure we are adding valid data
+    if (item.bytes && item.bytes.length > 0) {
+        zip.file(item.filename, new Uint8Array(item.bytes));
+    }
   }
-  const blob = await zip.generateAsync({ type: 'blob' });
+  
+  const blob = await zip.generateAsync({ 
+    type: 'blob',
+    compression: 'DEFLATE',
+    compressionOptions: { level: 9 }
+  });
+  
   const url = URL.createObjectURL(blob);
-  const id = await chrome.downloads.download({ url, filename: zipName, saveAs: false });
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  const id = await chrome.downloads.download({ 
+    url, 
+    filename: zipName, 
+    saveAs: false,
+    conflictAction: 'uniquify'
+  });
+  
+  // Clean up URL after download starts
+  setTimeout(() => URL.revokeObjectURL(url), 120_000);
   return id;
 }
+
 
 async function toggleSelector(tabId: number): Promise<{ active: boolean }> {
   if (!injectedTabs.has(tabId)) {
@@ -74,8 +92,47 @@ async function toggleSelector(tabId: number): Promise<{ active: boolean }> {
   }
 }
 
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((error) => console.error(error));
+});
+
+// Global Map for near-instant naming lookup to avoid Windows naming failures
+const pendingNames = new Map<string, string>();
+
+async function addLog(msg: string) {
+    const timestamp = new Date().toLocaleTimeString();
+    const entry = `[${timestamp}] ${msg}`;
+    console.log(entry);
+    const data = await chrome.storage.local.get('logs');
+    const logs = data.logs || [];
+    logs.push(entry);
+    // Keep last 100 logs
+    if (logs.length > 100) logs.shift();
+    await chrome.storage.local.set({ logs });
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
+    if (message.type === 'GET_LOGS') {
+        const data = await chrome.storage.local.get('logs');
+        sendResponse({ logs: data.logs || [] });
+        return;
+    }
+    if (message.type === 'CLEAR_LOGS') {
+        await chrome.storage.local.set({ logs: [] });
+        sendResponse({ ok: true });
+        return;
+    }
+    if (message.type === 'REGISTER_NAME') {
+      await addLog(`Registering name: "${message.filename}" for URL: ${message.url.slice(0, 50)}...`);
+      pendingNames.set(message.url, message.filename);
+      const data = await chrome.storage.local.get('downloadRegistry');
+      const reg = data.downloadRegistry || {};
+      reg[message.url] = message.filename;
+      await chrome.storage.local.set({ downloadRegistry: reg });
+      sendResponse({ ok: true });
+      return;
+    }
     if (message.type === 'FETCH_SIZE') {
       sendResponse(await resolveSize(message.url));
       return;
@@ -85,6 +142,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const bytes = await fetchBytes(message.url);
         sendResponse({ ok: true, bytes: Array.from(new Uint8Array(bytes)) });
       } catch (error) {
+        await addLog(`Fetch bytes failed for ${message.url.slice(0, 30)}: ${(error as Error).message}`);
         sendResponse({ ok: false, error: (error as Error).message });
       }
       return;
@@ -106,7 +164,71 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse(result);
       return;
     }
+    if (message.type === 'SCAN_PAGE_IMAGES') {
+      (async () => {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        const tabId = tabs[0]?.id;
+        if (tabId) {
+            if (!injectedTabs.has(tabId)) {
+                await chrome.scripting.executeScript({ target: { tabId }, files: ['content/selectorOverlay.js'] });
+                injectedTabs.add(tabId);
+            }
+            try {
+                await chrome.tabs.sendMessage(tabId, { type: 'EXTRACT_PAGE_IMAGES' });
+            } catch (e) {
+                // Retry once if message failed (e.g. script was there but connection lost)
+                await chrome.scripting.executeScript({ target: { tabId }, files: ['content/selectorOverlay.js'] });
+                await chrome.tabs.sendMessage(tabId, { type: 'EXTRACT_PAGE_IMAGES' });
+            }
+        }
+      })().catch(err => console.error('SCAN_PAGE_IMAGES failed:', err));
+      sendResponse({ ok: true });
+      return;
+    }
     sendResponse({ ok: false, error: 'Unknown message' });
   })().catch((error) => sendResponse({ ok: false, error: (error as Error).message }));
   return true;
+});
+
+// Download naming interceptor - the "Final Boss" fix for Windows naming/folders
+chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+  (async () => {
+      await addLog(`Intercepting Download #${item.id}. URL: ${item.url.slice(0, 50)}...`);
+      
+      // 1. Try synchronous Map first
+      let suggestedName = pendingNames.get(item.finalUrl) || pendingNames.get(item.url);
+      
+      if (suggestedName) {
+        const finalFilename = suggestedName.replace(/\\/g, '/').replace(/^\//, '');
+        await addLog(`Sync Map Hit! Forcing name: "${finalFilename}"`);
+        suggest({ 
+            filename: finalFilename, 
+            conflictAction: 'uniquify' 
+        });
+        pendingNames.delete(item.finalUrl);
+        pendingNames.delete(item.url);
+        return;
+      }
+
+      // 2. Fallback to storage lookup
+      const data = await chrome.storage.local.get('downloadRegistry');
+      const registry = data.downloadRegistry || {};
+      suggestedName = registry[item.finalUrl] || registry[item.url];
+      
+      if (suggestedName) {
+        const finalFilename = suggestedName.replace(/\\/g, '/').replace(/^\//, '');
+        await addLog(`Async Storage Hit! Forcing name: "${finalFilename}"`);
+        suggest({ 
+          filename: finalFilename,
+          conflictAction: 'uniquify' 
+        });
+        delete registry[item.finalUrl];
+        delete registry[item.url];
+        await chrome.storage.local.set({ downloadRegistry: registry });
+      } else {
+        await addLog(`No suggested name found in Map or Registry. Letting Chrome decide.`);
+        suggest();
+      }
+  })();
+  return true; 
 });

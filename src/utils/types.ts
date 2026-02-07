@@ -22,6 +22,7 @@ export interface ExtractedImage {
   lazyHint?: boolean;
   bytes?: number;
   estimatedBytes?: number;
+  previewUrl?: string;
 }
 
 export interface SelectionPayload {
@@ -32,8 +33,7 @@ export interface SelectionPayload {
 export type DesiredFormat = 'original' | 'image/png' | 'image/jpeg' | 'image/webp';
 
 export interface NamingOptions {
-  template: string;
-  startIndex: number;
-  zeroPad: number;
-  includeHint: boolean;
+  prefix: string;
+  folderName: string;
 }
+

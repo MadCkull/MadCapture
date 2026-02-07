@@ -46,6 +46,8 @@ if (!window.__madcapture_selector_booted__) {
     box.style.position = 'fixed';
     box.style.border = '2px solid #7c4dff';
     box.style.background = 'rgba(124,77,255,0.15)';
+    box.style.opacity = '0';
+    box.style.pointerEvents = 'none';
 
     const tooltip = document.createElement('div');
     tooltip.style.position = 'fixed';
@@ -53,6 +55,8 @@ if (!window.__madcapture_selector_booted__) {
     tooltip.style.color = '#fff';
     tooltip.style.padding = '4px 6px';
     tooltip.style.font = '12px sans-serif';
+    tooltip.style.opacity = '0';
+    tooltip.style.pointerEvents = 'none';
 
     shadow.append(box, tooltip);
     document.documentElement.append(host);
@@ -67,8 +71,10 @@ if (!window.__madcapture_selector_booted__) {
     state.box.style.transform = `translate(${rect.left}px, ${rect.top}px)`;
     state.box.style.width = `${rect.width}px`;
     state.box.style.height = `${rect.height}px`;
+    state.box.style.opacity = '1';
     state.tooltip.textContent = `${Math.round(rect.width)}x${Math.round(rect.height)}`;
     state.tooltip.style.transform = `translate(${rect.left}px, ${Math.max(0, rect.top - 22)}px)`;
+    state.tooltip.style.opacity = '1';
   }
 
   let raf = 0;
@@ -76,8 +82,11 @@ if (!window.__madcapture_selector_booted__) {
     if (raf) return;
     raf = requestAnimationFrame(() => {
       raf = 0;
+      // In pointermove, the overlay host might have pointer-events: auto or we might hit our own box.
+      // But we set host to none and box to none.
       const el = document.elementFromPoint(ev.clientX, ev.clientY);
-      if (!el || el === state.overlay) return;
+      // Skip if we hit the host or any of its children (unlikely if pointer-events: none is working)
+      if (!el || (state.overlay && (el === state.overlay || state.overlay.contains(el)))) return;
       state.current = el;
       renderCurrent(el);
     });
@@ -95,14 +104,6 @@ if (!window.__madcapture_selector_booted__) {
     chrome.runtime.sendMessage({ type: 'SELECTION_LOCKED', payload, images });
   }
 
-  function onClick(ev: MouseEvent): void {
-    if (!state.current) return;
-    ev.preventDefault();
-    ev.stopPropagation();
-    if (!ev.shiftKey) state.locked = [];
-    if (!state.locked.includes(state.current)) state.locked.push(state.current);
-    void reportSelection();
-  }
 
   function onKey(ev: KeyboardEvent): void {
     if (ev.key === 'Escape') {
@@ -119,20 +120,65 @@ if (!window.__madcapture_selector_booted__) {
     }
   }
 
+  function stopEvents(ev: Event): void {
+    if (!state.active) return;
+    
+    // Consolidate click logic here to ensure it's not blocked by other interceptors
+    if (ev.type === 'click' && ev instanceof MouseEvent) {
+        if (state.current) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            ev.stopImmediatePropagation();
+            if (!ev.shiftKey) {
+                state.locked = [];
+                deactivate();
+            }
+            if (!state.locked.includes(state.current)) state.locked.push(state.current);
+            chrome.runtime.sendMessage({ type: 'WAIT_FOR_IMAGES' });
+            void reportSelection();
+            return;
+        }
+    }
+
+    ev.preventDefault();
+    ev.stopPropagation();
+    ev.stopImmediatePropagation();
+  }
+
   function activate(): void {
     if (state.active) return;
     state.active = true;
     ensureOverlay();
+    
+    // Capture phase listeners on window to intercept and handle clicks
+    window.addEventListener('click', stopEvents, true);
+    window.addEventListener('mousedown', stopEvents, true);
+    window.addEventListener('mouseup', stopEvents, true);
+    window.addEventListener('pointerdown', stopEvents, true);
+    window.addEventListener('pointerup', stopEvents, true);
+    window.addEventListener('dblclick', stopEvents, true);
+    
     document.addEventListener('pointermove', onMove, true);
-    document.addEventListener('click', onClick, true);
     document.addEventListener('keydown', onKey, true);
+    
+    document.body.style.cursor = 'crosshair';
   }
 
   function deactivate(): void {
+    if (!state.active) return;
     state.active = false;
+    
+    window.removeEventListener('click', stopEvents, true);
+    window.removeEventListener('mousedown', stopEvents, true);
+    window.removeEventListener('mouseup', stopEvents, true);
+    window.removeEventListener('pointerdown', stopEvents, true);
+    window.removeEventListener('pointerup', stopEvents, true);
+    window.removeEventListener('dblclick', stopEvents, true);
+    
     document.removeEventListener('pointermove', onMove, true);
-    document.removeEventListener('click', onClick, true);
     document.removeEventListener('keydown', onKey, true);
+    document.body.style.cursor = '';
+    
     state.overlay?.remove();
     state.overlay = undefined;
   }
@@ -143,5 +189,15 @@ if (!window.__madcapture_selector_booted__) {
       else activate();
       sendResponse({ active: state.active });
     }
+    if (msg.type === 'EXTRACT_PAGE_IMAGES') {
+      (async () => {
+        chrome.runtime.sendMessage({ type: 'WAIT_FOR_IMAGES' });
+        // Scan the whole body
+        const images = await extractImagesFromRoots([document.body]);
+        chrome.runtime.sendMessage({ type: 'PAGE_IMAGES_FOUND', images });
+      })();
+      sendResponse({ ok: true });
+    }
+    return true;
   });
 }

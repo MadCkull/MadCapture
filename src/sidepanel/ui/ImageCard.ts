@@ -1,13 +1,21 @@
 import { ExtractedImage } from '../../utils/types';
 
-export function renderImageCard(item: ExtractedImage, checked: boolean): string {
+export function renderImageCard(item: ExtractedImage, selected: boolean): string {
+  const sizeText = item.bytes 
+    ? `${(item.bytes / 1024).toFixed(1)} KB` 
+    : '...';
+    
+  const dimText = item.width && item.height ? `${item.width}×${item.height}` : '...';
+    
   return `
-    <label class="card">
-      <input type="checkbox" data-id="${item.id}" ${checked ? 'checked' : ''}/>
-      <img src="${item.url}" alt="${item.filenameHint || 'image'}" loading="lazy" />
-      <div class="meta">
-        <div>${item.width ?? '?'}×${item.height ?? '?'}</div>
-        <div>${item.bytes ? `${Math.round(item.bytes / 1024)} KB` : 'size ?'}</div>
+    <div class="card ${selected ? 'selected' : ''}" data-id="${item.id}">
+      <div class="card-image-wrapper">
+        <img src="${item.previewUrl || item.url}" alt="${item.filenameHint || 'image'}" loading="lazy" />
       </div>
-    </label>`;
+      <div class="meta">
+        <span class="dimensions">${dimText}</span>
+        <span class="size">${sizeText}</span>
+      </div>
+    </div>`;
 }
+

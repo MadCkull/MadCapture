@@ -4,21 +4,22 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "npm run clean && esbuild src/sidepanel/panel.ts --bundle --outfile=build/side_panel.bundle.js --platform=browser --format=iife && esbuild src/background/service_worker.ts --bundle --outfile=build/background/worker.js --platform=browser --format=esm && esbuild src/content/selectorOverlay.ts --bundle --outfile=build/content/selectorOverlay.js --platform=browser --format=iife && esbuild src/workers/converter.worker.ts --bundle --outfile=build/workers/converter.worker.js --platform=browser --format=iife && cp side_panel.html build/side_panel.html && cp src/sidepanel/styles.css build/styles.css && cp manifest.json build/manifest.json",
-    "clean": "rm -rf build coverage test-results",
+    "build": "npm run clean && esbuild src/sidepanel/panel.ts --bundle --outfile=build/side_panel.bundle.js --platform=browser --format=iife && esbuild src/background/service_worker.ts --bundle --outfile=build/background/worker.js --platform=browser --format=esm && esbuild src/content/selectorOverlay.ts --bundle --outfile=build/content/selectorOverlay.js --platform=browser --format=iife && esbuild src/workers/converter.worker.ts --bundle --outfile=build/workers/converter.worker.js --platform=browser --format=iife && shx cp side_panel.html build/side_panel.html && shx cp src/sidepanel/styles.css build/styles.css && shx cp manifest.json build/manifest.json",
+    "clean": "shx rm -rf build coverage test-results",
     "test": "jest",
     "test:unit": "jest src/tests/unit --runInBand",
     "test:e2e": "playwright test"
   },
   "devDependencies": {
     "@playwright/test": "^1.51.0",
+    "@types/chrome": "^0.0.316",
     "@types/jest": "^29.5.14",
     "esbuild": "^0.25.1",
     "jest": "^29.7.0",
     "jest-environment-jsdom": "^29.7.0",
+    "shx": "^0.4.0",
     "ts-jest": "^29.2.5",
-    "typescript": "^5.8.2",
-    "@types/chrome": "^0.0.316"
+    "typescript": "^5.8.2"
   },
   "dependencies": {
     "jszip": "^3.10.1",
