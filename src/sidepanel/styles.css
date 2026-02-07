@@ -1,0 +1,13 @@
+:root { color-scheme: light dark; font-family: Inter, system-ui, sans-serif; }
+body { margin: 0; }
+#app { display: grid; grid-template-rows: auto 1fr auto; height: 100vh; }
+.toolbar, .footer { display: flex; align-items: center; gap: 8px; padding: 10px; border-bottom: 1px solid #ddd; }
+.footer { border-bottom: 0; border-top: 1px solid #ddd; }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; padding: 8px; overflow: auto; }
+.card { border: 1px solid #ddd; border-radius: 12px; padding: 6px; display: grid; gap: 4px; }
+.card img { width: 100%; aspect-ratio: 1/1; object-fit: cover; border-radius: 8px; background: #f5f5f5; }
+.meta { font-size: 12px; display: flex; justify-content: space-between; }
+.settings { display: grid; gap: 8px; padding: 8px; border-top: 1px solid #ddd; }
+.settings label { display: grid; gap: 4px; font-size: 12px; }
+button.primary { background: #7c4dff; color: white; border: 0; border-radius: 10px; padding: 8px 12px; }
+.status { margin-left: auto; font-size: 12px; opacity: .8; }

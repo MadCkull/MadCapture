@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<body>
+  <div id="capture" style="background-image:url('https://example.com/bg.png'); width:200px; height:120px;">
+    <img src="https://example.com/a.jpg" srcset="https://example.com/a-small.jpg 320w, https://example.com/a-large.jpg 1280w" />
+    <picture>
+      <source srcset="https://example.com/pic-1.webp 1x, https://example.com/pic-2.webp 2x" type="image/webp" />
+      <img src="https://example.com/fallback.jpg" />
+    </picture>
+    <video poster="https://example.com/poster.jpg"></video>
+    <canvas id="c" width="10" height="10"></canvas>
+    <svg width="10" height="10"><rect width="10" height="10" fill="red"></rect></svg>
+  </div>
+</body>
+</html>
