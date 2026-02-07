@@ -8,9 +8,14 @@ export function renderFilename(template: string, name: string, index: number, ex
     .replaceAll('{ext}', ext);
 }
 
+function safeName(input: string): string {
+  return input.replace(/[\\/:*?"<>|]/g, '_').slice(0, 120);
+}
+
 export function buildFilenames(count: number, options: NamingOptions, hints: string[], ext: string): string[] {
   return new Array(count).fill(0).map((_, i) => {
-    const hint = hints[i] || 'Pic';
-    return renderFilename(options.template, hint, options.startIndex + i, ext, options.zeroPad);
+    const hint = safeName(hints[i] || 'Pic');
+    const tokenName = options.includeHint ? hint : 'Pic';
+    return renderFilename(options.template, tokenName, options.startIndex + i, ext, options.zeroPad);
   });
 }

@@ -1,4 +1,12 @@
-export type OriginType = 'img' | 'picture' | 'css-background' | 'inline-svg' | 'canvas' | 'video-poster' | 'lazy-attr' | 'data-url';
+export type OriginType =
+  | 'img'
+  | 'picture'
+  | 'css-background'
+  | 'inline-svg'
+  | 'canvas'
+  | 'video-poster'
+  | 'lazy-attr'
+  | 'data-url';
 
 export interface ExtractedImage {
   id: string;
@@ -27,4 +35,5 @@ export interface NamingOptions {
   template: string;
   startIndex: number;
   zeroPad: number;
+  includeHint: boolean;
 }

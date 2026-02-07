@@ -11,3 +11,5 @@ body { margin: 0; }
 .settings label { display: grid; gap: 4px; font-size: 12px; }
 button.primary { background: #7c4dff; color: white; border: 0; border-radius: 10px; padding: 8px 12px; }
 .status { margin-left: auto; font-size: 12px; opacity: .8; }
+
+.preview { max-height: 120px; overflow: auto; border: 1px solid #ddd; border-radius: 8px; padding: 6px; font-size: 11px; }
