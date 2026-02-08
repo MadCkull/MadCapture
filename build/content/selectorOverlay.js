@@ -53,7 +53,11 @@
   function idFor(url, idx) {
     return `${idx}-${url.slice(0, 80)}`;
   }
-  function fromImg(el, idx) {
+  function posFor(el) {
+    const rect = el.getBoundingClientRect();
+    return { pageX: rect.left + window.scrollX, pageY: rect.top + window.scrollY };
+  }
+  function fromImg(el, idx, pos) {
     const urls = /* @__PURE__ */ new Set();
     if (el.src) urls.add(canonicalizeUrl(el.src));
     if (el.currentSrc) urls.add(canonicalizeUrl(el.currentSrc));
@@ -66,98 +70,156 @@
       width: el.naturalWidth,
       height: el.naturalHeight,
       filenameHint: filenameFromUrl(url),
-      srcsetCandidates: el.srcset ? parseSrcset(el.srcset).map((c) => c.url) : void 0
+      srcsetCandidates: el.srcset ? parseSrcset(el.srcset).map((c) => c.url) : void 0,
+      pageX: pos?.pageX,
+      pageY: pos?.pageY
     }));
   }
   function extractDataUrlMime(dataUrl) {
     const match = dataUrl.match(/^data:(.*?);/);
     return match?.[1] ?? "application/octet-stream";
   }
+  async function maybeNudgeLazyLoad(root) {
+    if (!(root instanceof HTMLElement)) return;
+    root.scrollIntoView({ block: "center", inline: "nearest" });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
   async function extractImagesFromRoots(roots) {
     const items = [];
     let idx = 0;
     for (const root of roots) {
-      if (root.tagName.toLowerCase() === "img") {
-        items.push(...fromImg(root, idx++));
+      try {
+        await maybeNudgeLazyLoad(root);
+      } catch {
       }
       const all = [root, ...root.querySelectorAll("*")];
       for (const el of all) {
-        if (el instanceof HTMLImageElement) items.push(...fromImg(el, idx++));
-        if (el instanceof HTMLPictureElement) {
-          const img = el.querySelector("img");
-          if (img) items.push(...fromImg(img, idx++));
-          for (const source of el.querySelectorAll("source")) {
-            const srcset = source.srcset || source.getAttribute("srcset") || "";
-            parseSrcset(srcset).forEach((c) => items.push({
-              id: idFor(c.url, idx++),
-              url: canonicalizeUrl(c.url),
-              originType: "picture",
-              filenameHint: filenameFromUrl(c.url)
-            }));
+        try {
+          const pos = posFor(el);
+          if (el instanceof HTMLImageElement) items.push(...fromImg(el, idx++, pos));
+          if (el instanceof HTMLPictureElement) {
+            for (const source of el.querySelectorAll("source")) {
+              const srcset = source.srcset || source.getAttribute("srcset") || "";
+              parseSrcset(srcset).forEach(
+                (c) => items.push({
+                  id: idFor(c.url, idx++),
+                  url: canonicalizeUrl(c.url),
+                  originType: "picture",
+                  filenameHint: filenameFromUrl(c.url),
+                  pageX: pos.pageX,
+                  pageY: pos.pageY
+                })
+              );
+            }
           }
-        }
-        if (el instanceof SVGElement) {
-          try {
-            const clone = el.cloneNode(true);
-            if (!clone.getAttribute("xmlns")) clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-            const payload = new XMLSerializer().serializeToString(clone);
-            const dataUrl = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(payload)))}`;
-            items.push({ id: idFor(dataUrl, idx++), url: dataUrl, originType: "inline-svg", isInlineSVG: true, isDataUrl: true, filenameHint: "vector.svg" });
-          } catch (e) {
-            console.warn("SVG extraction failed", e);
+          if (el instanceof SVGElement) {
+            try {
+              const clone = el.cloneNode(true);
+              if (!clone.getAttribute("xmlns")) clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+              const payload = new XMLSerializer().serializeToString(clone);
+              const dataUrl = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(payload)))}`;
+              items.push({
+                id: idFor(dataUrl, idx++),
+                url: dataUrl,
+                originType: "inline-svg",
+                isInlineSVG: true,
+                isDataUrl: true,
+                filenameHint: "vector.svg",
+                pageX: pos.pageX,
+                pageY: pos.pageY
+              });
+            } catch (e) {
+              console.warn("SVG extraction failed", e);
+            }
           }
-        }
-        if (el instanceof HTMLCanvasElement) {
-          try {
-            const dataUrl = el.toDataURL("image/png");
-            items.push({ id: idFor(dataUrl, idx++), url: dataUrl, originType: "canvas", isCanvas: true, isDataUrl: true, width: el.width, height: el.height, filenameHint: "canvas.png" });
-          } catch (e) {
-            console.warn("Canvas extraction failed", e);
+          if (el instanceof HTMLCanvasElement) {
+            try {
+              const dataUrl = el.toDataURL("image/png");
+              items.push({
+                id: idFor(dataUrl, idx++),
+                url: dataUrl,
+                originType: "canvas",
+                isCanvas: true,
+                isDataUrl: true,
+                width: el.width,
+                height: el.height,
+                filenameHint: "canvas.png",
+                pageX: pos.pageX,
+                pageY: pos.pageY
+              });
+            } catch (e) {
+              console.warn("Canvas extraction failed", e);
+            }
           }
-        }
-        let curr = el;
-        while (curr && curr !== root.parentElement) {
-          const bg = getComputedStyle(curr).getPropertyValue("background-image");
-          if (bg && bg !== "none") {
-            extractBackgroundImageUrls(bg).forEach((url) => {
-              const abs = canonicalizeUrl(url);
-              items.push({ id: idFor(abs, idx++), url: abs, originType: "css-background", filenameHint: filenameFromUrl(abs) });
+          if (el instanceof HTMLVideoElement && el.poster) {
+            const url = canonicalizeUrl(el.poster);
+            items.push({
+              id: idFor(url, idx++),
+              url,
+              originType: "video-poster",
+              filenameHint: filenameFromUrl(url),
+              pageX: pos.pageX,
+              pageY: pos.pageY
             });
           }
-          if (curr === root) break;
-          curr = curr.parentElement;
-        }
-        for (const attr of LAZY_ATTRS) {
-          const value = el.getAttribute(attr);
-          if (!value) continue;
-          if (attr.includes("srcset")) {
-            parseSrcset(value).forEach((candidate) => items.push({
-              id: idFor(candidate.url, idx++),
-              url: canonicalizeUrl(candidate.url),
-              originType: "lazy-attr",
-              lazyHint: true,
-              filenameHint: filenameFromUrl(candidate.url)
-            }));
-          } else {
-            const u = canonicalizeUrl(value);
-            items.push({ id: idFor(u, idx++), url: u, originType: "lazy-attr", lazyHint: true, filenameHint: filenameFromUrl(u) });
+          if (el instanceof HTMLElement) {
+            const bg = getComputedStyle(el).getPropertyValue("background-image");
+            if (bg && bg !== "none") {
+              extractBackgroundImageUrls(bg).forEach((url) => {
+                const abs = canonicalizeUrl(url);
+                items.push({
+                  id: idFor(abs, idx++),
+                  url: abs,
+                  originType: "css-background",
+                  filenameHint: filenameFromUrl(abs),
+                  pageX: pos.pageX,
+                  pageY: pos.pageY
+                });
+              });
+            }
           }
+          for (const attr of LAZY_ATTRS) {
+            const value = el.getAttribute(attr);
+            if (!value) continue;
+            if (attr.includes("srcset")) {
+              parseSrcset(value).forEach(
+                (candidate) => items.push({
+                  id: idFor(candidate.url, idx++),
+                  url: canonicalizeUrl(candidate.url),
+                  originType: "lazy-attr",
+                  lazyHint: true,
+                  filenameHint: filenameFromUrl(candidate.url),
+                  pageX: pos.pageX,
+                  pageY: pos.pageY
+                })
+              );
+            } else {
+              const u = canonicalizeUrl(value);
+              items.push({
+                id: idFor(u, idx++),
+                url: u,
+                originType: "lazy-attr",
+                lazyHint: true,
+                filenameHint: filenameFromUrl(u),
+                pageX: pos.pageX,
+                pageY: pos.pageY
+              });
+            }
+          }
+        } catch (e) {
+          console.warn("Element extraction failed", e);
         }
       }
     }
     return items.filter((item) => {
-      if (item.url.toLowerCase().endsWith(".svg") || item.url.includes("svg+xml")) return false;
-      if (item.url.startsWith("data:")) {
-        if (item.url.length < 100) return false;
-        const mime = extractDataUrlMime(item.url);
-        if (mime.includes("svg")) return false;
-      }
+      const url = item.url.toLowerCase();
+      if (url.endsWith(".svg") || url.includes("svg+xml")) return false;
       return true;
     }).map((item) => {
       if (item.url.startsWith("data:")) {
         const mime = extractDataUrlMime(item.url);
         const ext = mime.split("/")[1]?.split("+")[0] || "bin";
-        return { ...item, isDataUrl: true, originType: "data-url", filenameHint: item.filenameHint ?? `data.${ext}` };
+        return { ...item, isDataUrl: true, filenameHint: item.filenameHint ?? `data.${ext}` };
       }
       return item;
     }).filter((item, i, arr) => arr.findIndex((x) => x.url === item.url) === i);
@@ -177,6 +239,14 @@
       return parts.join(" > ");
     }, ensureOverlay = function() {
       if (state.overlay) return;
+      const shield = document.createElement("div");
+      shield.style.position = "fixed";
+      shield.style.inset = "0";
+      shield.style.pointerEvents = "auto";
+      shield.style.background = "transparent";
+      shield.style.zIndex = "2147483646";
+      shield.style.cursor = "crosshair";
+      document.documentElement.append(shield);
       const host = document.createElement("div");
       host.style.position = "fixed";
       host.style.inset = "0";
@@ -199,6 +269,7 @@
       tooltip.style.pointerEvents = "none";
       shadow.append(box, tooltip);
       document.documentElement.append(host);
+      state.shield = shield;
       state.overlay = host;
       state.box = box;
       state.tooltip = tooltip;
@@ -212,11 +283,19 @@
       state.tooltip.textContent = `${Math.round(rect.width)}x${Math.round(rect.height)}`;
       state.tooltip.style.transform = `translate(${rect.left}px, ${Math.max(0, rect.top - 22)}px)`;
       state.tooltip.style.opacity = "1";
+    }, elementUnderPoint = function(x, y) {
+      const list = document.elementsFromPoint(x, y);
+      for (const el of list) {
+        if (state.shield && el === state.shield) continue;
+        if (state.overlay && (el === state.overlay || state.overlay.contains(el))) continue;
+        return el;
+      }
+      return null;
     }, onMove = function(ev) {
       if (raf) return;
       raf = requestAnimationFrame(() => {
         raf = 0;
-        const el = document.elementFromPoint(ev.clientX, ev.clientY);
+        const el = elementUnderPoint(ev.clientX, ev.clientY);
         if (!el || state.overlay && (el === state.overlay || state.overlay.contains(el))) return;
         state.current = el;
         renderCurrent(el);
@@ -257,6 +336,8 @@
     }, activate = function() {
       if (state.active) return;
       state.active = true;
+      state.locked = [];
+      state.current = void 0;
       ensureOverlay();
       window.addEventListener("click", stopEvents, true);
       window.addEventListener("mousedown", stopEvents, true);
@@ -280,9 +361,11 @@
       document.removeEventListener("keydown", onKey, true);
       document.body.style.cursor = "";
       state.overlay?.remove();
+      state.shield?.remove();
       state.overlay = void 0;
+      state.shield = void 0;
     };
-    selectorFor2 = selectorFor, ensureOverlay2 = ensureOverlay, renderCurrent2 = renderCurrent, onMove2 = onMove, onKey2 = onKey, stopEvents2 = stopEvents, activate2 = activate, deactivate2 = deactivate;
+    selectorFor2 = selectorFor, ensureOverlay2 = ensureOverlay, renderCurrent2 = renderCurrent, elementUnderPoint2 = elementUnderPoint, onMove2 = onMove, onKey2 = onKey, stopEvents2 = stopEvents, activate2 = activate, deactivate2 = deactivate;
     window.__madcapture_selector_booted__ = true;
     const state = { active: false, locked: [] };
     let raf = 0;
@@ -294,8 +377,17 @@
           return { x: r.x, y: r.y, width: r.width, height: r.height };
         })
       };
-      const images = await extractImagesFromRoots(state.locked);
-      chrome.runtime.sendMessage({ type: "SELECTION_LOCKED", payload, images });
+      try {
+        const images = await extractImagesFromRoots(state.locked);
+        chrome.runtime.sendMessage({ type: "SELECTION_LOCKED", payload, images });
+      } catch (error) {
+        chrome.runtime.sendMessage({
+          type: "SELECTION_LOCKED",
+          payload,
+          images: [],
+          error: error.message
+        });
+      }
     }
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg.type === "TOGGLE_SELECTOR") {
@@ -306,10 +398,29 @@
       if (msg.type === "EXTRACT_PAGE_IMAGES") {
         (async () => {
           chrome.runtime.sendMessage({ type: "WAIT_FOR_IMAGES" });
-          const images = await extractImagesFromRoots([document.body]);
-          chrome.runtime.sendMessage({ type: "PAGE_IMAGES_FOUND", images });
+          try {
+            const images = await extractImagesFromRoots([document.body]);
+            chrome.runtime.sendMessage({ type: "PAGE_IMAGES_FOUND", images });
+          } catch (error) {
+            chrome.runtime.sendMessage({
+              type: "PAGE_IMAGES_FOUND",
+              images: [],
+              error: error.message
+            });
+          }
         })();
         sendResponse({ ok: true });
+      }
+      if (msg.type === "LOCATE_IMAGE_ON_PAGE") {
+        (async () => {
+          try {
+            const result = await locateAndHighlight(msg.url, msg.pageX, msg.pageY);
+            sendResponse(result);
+          } catch (error) {
+            sendResponse({ ok: false, error: error.message });
+          }
+        })();
+        return true;
       }
       return true;
     });
@@ -317,9 +428,146 @@
   var selectorFor2;
   var ensureOverlay2;
   var renderCurrent2;
+  var elementUnderPoint2;
   var onMove2;
   var onKey2;
   var stopEvents2;
   var activate2;
   var deactivate2;
+  function normalizeUrl(input, base = location.href) {
+    try {
+      const u = new URL(input, base);
+      u.hash = "";
+      return u.toString();
+    } catch {
+      return input;
+    }
+  }
+  function srcsetUrls(srcset) {
+    return srcset.split(",").map((part) => part.trim().split(/\s+/)[0]).filter(Boolean);
+  }
+  function extractCssUrls(value) {
+    const urls = [];
+    const re = /url\((['"]?)(.*?)\1\)/g;
+    let match;
+    while (match = re.exec(value)) {
+      if (match[2]) urls.push(match[2]);
+    }
+    return urls;
+  }
+  function findCandidates(targetUrl) {
+    const targetNorm = normalizeUrl(targetUrl);
+    const candidates = [];
+    for (const img of Array.from(document.images)) {
+      const srcs = [img.currentSrc, img.src].filter(Boolean).map((u) => normalizeUrl(u));
+      if (srcs.includes(targetNorm)) {
+        candidates.push(img);
+        continue;
+      }
+      if (img.srcset) {
+        const urls = srcsetUrls(img.srcset).map((u) => normalizeUrl(u));
+        if (urls.includes(targetNorm)) candidates.push(img);
+      }
+    }
+    for (const source of Array.from(document.querySelectorAll("source"))) {
+      const srcset = source.srcset || source.getAttribute("srcset") || "";
+      if (!srcset) continue;
+      const urls = srcsetUrls(srcset).map((u) => normalizeUrl(u));
+      if (urls.includes(targetNorm)) {
+        candidates.push(source.parentElement ?? source);
+      }
+    }
+    for (const video of Array.from(document.querySelectorAll("video"))) {
+      const poster = video.poster;
+      if (poster && normalizeUrl(poster) === targetNorm) candidates.push(video);
+    }
+    for (const el of Array.from(document.querySelectorAll("*"))) {
+      const bg = getComputedStyle(el).backgroundImage;
+      if (!bg || bg === "none") continue;
+      const urls = extractCssUrls(bg).map((u) => normalizeUrl(u));
+      if (urls.includes(targetNorm)) candidates.push(el);
+    }
+    return candidates;
+  }
+  function pickClosest(candidates, pageX, pageY) {
+    if (!candidates.length) return null;
+    if (!Number.isFinite(pageX) || !Number.isFinite(pageY)) return candidates[0];
+    let best = candidates[0];
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (const el of candidates) {
+      const rect = el.getBoundingClientRect();
+      const cx = rect.left + window.scrollX + rect.width / 2;
+      const cy = rect.top + window.scrollY + rect.height / 2;
+      const dx = cx - pageX;
+      const dy = cy - pageY;
+      const dist = dx * dx + dy * dy;
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = el;
+      }
+    }
+    return best;
+  }
+  async function highlightElement(el) {
+    el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+    await waitForScrollStop();
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) return;
+    const overlay = document.createElement("div");
+    overlay.style.position = "fixed";
+    overlay.style.left = `${rect.left}px`;
+    overlay.style.top = `${rect.top}px`;
+    overlay.style.width = `${rect.width}px`;
+    overlay.style.height = `${rect.height}px`;
+    overlay.style.border = "2px solid #f2c94c";
+    overlay.style.boxShadow = "0 0 0 2px rgba(242, 201, 76, 0.6), 0 0 20px rgba(242, 201, 76, 0.45)";
+    overlay.style.borderRadius = "6px";
+    overlay.style.pointerEvents = "none";
+    overlay.style.zIndex = "2147483647";
+    overlay.style.transition = "opacity 0.6s ease";
+    document.documentElement.appendChild(overlay);
+    setTimeout(() => {
+      overlay.style.opacity = "0";
+    }, 800);
+    setTimeout(() => {
+      overlay.remove();
+    }, 1400);
+  }
+  async function waitForScrollStop(timeoutMs = 2500, idleMs = 200) {
+    return new Promise((resolve) => {
+      let settled = false;
+      let idleTimer;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (idleTimer) window.clearTimeout(idleTimer);
+        window.removeEventListener("scroll", onScroll, true);
+        resolve();
+      };
+      const onScroll = () => {
+        if (idleTimer) window.clearTimeout(idleTimer);
+        idleTimer = window.setTimeout(finish, idleMs);
+      };
+      window.addEventListener("scroll", onScroll, true);
+      idleTimer = window.setTimeout(finish, idleMs);
+      window.setTimeout(finish, timeoutMs);
+    });
+  }
+  async function locateAndHighlight(url, pageX, pageY) {
+    if (!url) return { ok: false, error: "Missing image url", level: "error" };
+    const candidates = findCandidates(url);
+    let target = pickClosest(candidates, pageX, pageY);
+    if (!target && Number.isFinite(pageY)) {
+      window.scrollTo({ top: Math.max(0, pageY - window.innerHeight / 2), behavior: "smooth" });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      if (Number.isFinite(pageX)) {
+        const x = Math.min(window.innerWidth - 1, Math.max(0, pageX - window.scrollX));
+        const y = Math.min(window.innerHeight - 1, Math.max(0, pageY - window.scrollY));
+        target = document.elementFromPoint(x, y) || null;
+      }
+    }
+    if (!target) return { ok: false, error: "Could not locate image on page", level: "warn" };
+    await highlightElement(target);
+    return { ok: true };
+  }
 })();

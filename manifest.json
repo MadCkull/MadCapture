@@ -5,6 +5,21 @@
   "action": { "default_title": "MadCapture" },
   "side_panel": { "default_path": "side_panel.html" },
   "permissions": ["downloads", "scripting", "activeTab", "storage", "sidePanel"],
+  "commands": {
+    "toggle-selector": {
+      "suggested_key": {
+        "default": "Alt+S"
+      },
+      "description": "Toggle selector overlay"
+    }
+  },
   "host_permissions": ["<all_urls>"],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/hotkeys.js"],
+      "run_at": "document_start"
+    }
+  ],
   "background": { "service_worker": "background/worker.js", "type": "module" }
 }

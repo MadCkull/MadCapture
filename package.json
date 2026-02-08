@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "npm run clean && esbuild src/sidepanel/panel.ts --bundle --outfile=build/side_panel.bundle.js --platform=browser --format=iife && esbuild src/background/service_worker.ts --bundle --outfile=build/background/worker.js --platform=browser --format=esm && esbuild src/content/selectorOverlay.ts --bundle --outfile=build/content/selectorOverlay.js --platform=browser --format=iife && esbuild src/workers/converter.worker.ts --bundle --outfile=build/workers/converter.worker.js --platform=browser --format=iife && shx cp side_panel.html build/side_panel.html && shx cp src/sidepanel/styles.css build/styles.css && shx cp manifest.json build/manifest.json",
+    "build": "npm run clean && esbuild src/sidepanel/panel.ts --bundle --outfile=build/side_panel.bundle.js --platform=browser --format=iife && esbuild src/background/service_worker.ts --bundle --outfile=build/background/worker.js --platform=browser --format=esm && esbuild src/content/selectorOverlay.ts --bundle --outfile=build/content/selectorOverlay.js --platform=browser --format=iife && esbuild src/content/hotkeys.ts --bundle --outfile=build/content/hotkeys.js --platform=browser --format=iife && esbuild src/workers/converter.worker.ts --bundle --outfile=build/workers/converter.worker.js --platform=browser --format=iife && shx cp side_panel.html build/side_panel.html && shx cp src/sidepanel/styles.css build/styles.css && shx cp manifest.json build/manifest.json",
     "clean": "shx rm -rf build coverage test-results",
     "test": "jest",
     "test:unit": "jest src/tests/unit --runInBand",

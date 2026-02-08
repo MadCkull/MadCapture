@@ -2431,11 +2431,6 @@ async function resolveSize(url) {
   }
 }
 async function fetchBytes(url) {
-  if (url.startsWith("data:")) {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error("Failed to fetch data URL");
-    return res.arrayBuffer();
-  }
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
   return response.arrayBuffer();
@@ -2543,28 +2538,81 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
     if (message.type === "SCAN_PAGE_IMAGES") {
-      (async () => {
-        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-        const tabId = tabs[0]?.id;
-        if (tabId) {
-          if (!injectedTabs.has(tabId)) {
-            await chrome.scripting.executeScript({ target: { tabId }, files: ["content/selectorOverlay.js"] });
-            injectedTabs.add(tabId);
-          }
-          try {
-            await chrome.tabs.sendMessage(tabId, { type: "EXTRACT_PAGE_IMAGES" });
-          } catch (e) {
-            await chrome.scripting.executeScript({ target: { tabId }, files: ["content/selectorOverlay.js"] });
-            await chrome.tabs.sendMessage(tabId, { type: "EXTRACT_PAGE_IMAGES" });
-          }
-        }
-      })().catch((err) => console.error("SCAN_PAGE_IMAGES failed:", err));
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tabId = tabs[0]?.id;
+      if (!tabId) {
+        sendResponse({ ok: false, error: "No active tab" });
+        return;
+      }
+      if (!injectedTabs.has(tabId)) {
+        await chrome.scripting.executeScript({ target: { tabId }, files: ["content/selectorOverlay.js"] });
+        injectedTabs.add(tabId);
+      }
+      try {
+        await chrome.tabs.sendMessage(tabId, { type: "EXTRACT_PAGE_IMAGES" });
+      } catch {
+        await chrome.scripting.executeScript({ target: { tabId }, files: ["content/selectorOverlay.js"] });
+        injectedTabs.add(tabId);
+        await chrome.tabs.sendMessage(tabId, { type: "EXTRACT_PAGE_IMAGES" });
+      }
       sendResponse({ ok: true });
+      return;
+    }
+    if (message.type === "LOCATE_IMAGE_ON_PAGE") {
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tabId = tabs[0]?.id;
+      if (!tabId) {
+        sendResponse({ ok: false, error: "No active tab" });
+        return;
+      }
+      if (!injectedTabs.has(tabId)) {
+        try {
+          await chrome.scripting.executeScript({ target: { tabId }, files: ["content/selectorOverlay.js"] });
+          injectedTabs.add(tabId);
+        } catch (error) {
+          const messageText = error.message || "Unable to inject content script";
+          sendResponse({ ok: false, error: messageText, level: "error" });
+          return;
+        }
+      }
+      try {
+        const result = await chrome.tabs.sendMessage(tabId, {
+          type: "LOCATE_IMAGE_ON_PAGE",
+          url: message.url,
+          pageX: message.pageX,
+          pageY: message.pageY
+        });
+        if (!result || typeof result.ok !== "boolean") {
+          sendResponse({ ok: false, error: "No response from page. Reload the tab and try again.", level: "warn" });
+          return;
+        }
+        sendResponse(result);
+      } catch (error) {
+        const raw = error.message || "Unable to contact page";
+        let friendly = raw;
+        if (/Receiving end does not exist|Could not establish connection/i.test(raw)) {
+          friendly = "Content script not ready. Reload the page and try again.";
+        }
+        if (/Cannot access a chrome|Extension cannot access|Cannot access contents of the page/i.test(raw)) {
+          friendly = "This page is restricted by Chrome and cannot be inspected.";
+        }
+        sendResponse({ ok: false, error: friendly, level: "warn" });
+      }
       return;
     }
     sendResponse({ ok: false, error: "Unknown message" });
   })().catch((error) => sendResponse({ ok: false, error: error.message }));
   return true;
+});
+chrome.commands.onCommand.addListener(async (command) => {
+  if (command !== "toggle-selector") return;
+  try {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    const tabId = tabs[0]?.id;
+    if (!tabId) return;
+    await toggleSelector(tabId);
+  } catch {
+  }
 });
 chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
   (async () => {

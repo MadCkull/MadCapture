@@ -15,6 +15,7 @@ if (!window.__madcapture_selector_booted__) {
     current?: Element;
     locked: Element[];
     overlay?: HTMLElement;
+    shield?: HTMLElement;
     box?: HTMLElement;
     tooltip?: HTMLElement;
   };
@@ -35,6 +36,15 @@ if (!window.__madcapture_selector_booted__) {
 
   function ensureOverlay(): void {
     if (state.overlay) return;
+    const shield = document.createElement('div');
+    shield.style.position = 'fixed';
+    shield.style.inset = '0';
+    shield.style.pointerEvents = 'auto';
+    shield.style.background = 'transparent';
+    shield.style.zIndex = '2147483646';
+    shield.style.cursor = 'crosshair';
+    document.documentElement.append(shield);
+
     const host = document.createElement('div');
     host.style.position = 'fixed';
     host.style.inset = '0';
@@ -60,6 +70,7 @@ if (!window.__madcapture_selector_booted__) {
 
     shadow.append(box, tooltip);
     document.documentElement.append(host);
+    state.shield = shield;
     state.overlay = host;
     state.box = box;
     state.tooltip = tooltip;
@@ -78,14 +89,21 @@ if (!window.__madcapture_selector_booted__) {
   }
 
   let raf = 0;
+  function elementUnderPoint(x: number, y: number): Element | null {
+    const list = document.elementsFromPoint(x, y);
+    for (const el of list) {
+      if (state.shield && el === state.shield) continue;
+      if (state.overlay && (el === state.overlay || state.overlay.contains(el))) continue;
+      return el;
+    }
+    return null;
+  }
+
   function onMove(ev: PointerEvent): void {
     if (raf) return;
     raf = requestAnimationFrame(() => {
       raf = 0;
-      // In pointermove, the overlay host might have pointer-events: auto or we might hit our own box.
-      // But we set host to none and box to none.
-      const el = document.elementFromPoint(ev.clientX, ev.clientY);
-      // Skip if we hit the host or any of its children (unlikely if pointer-events: none is working)
+      const el = elementUnderPoint(ev.clientX, ev.clientY);
       if (!el || (state.overlay && (el === state.overlay || state.overlay.contains(el)))) return;
       state.current = el;
       renderCurrent(el);
@@ -100,10 +118,18 @@ if (!window.__madcapture_selector_booted__) {
         return { x: r.x, y: r.y, width: r.width, height: r.height };
       })
     };
-    const images = await extractImagesFromRoots(state.locked);
-    chrome.runtime.sendMessage({ type: 'SELECTION_LOCKED', payload, images });
+    try {
+      const images = await extractImagesFromRoots(state.locked);
+      chrome.runtime.sendMessage({ type: 'SELECTION_LOCKED', payload, images });
+    } catch (error) {
+      chrome.runtime.sendMessage({
+        type: 'SELECTION_LOCKED',
+        payload,
+        images: [],
+        error: (error as Error).message
+      });
+    }
   }
-
 
   function onKey(ev: KeyboardEvent): void {
     if (ev.key === 'Escape') {
@@ -122,22 +148,21 @@ if (!window.__madcapture_selector_booted__) {
 
   function stopEvents(ev: Event): void {
     if (!state.active) return;
-    
-    // Consolidate click logic here to ensure it's not blocked by other interceptors
+
     if (ev.type === 'click' && ev instanceof MouseEvent) {
-        if (state.current) {
-            ev.preventDefault();
-            ev.stopPropagation();
-            ev.stopImmediatePropagation();
-            if (!ev.shiftKey) {
-                state.locked = [];
-                deactivate();
-            }
-            if (!state.locked.includes(state.current)) state.locked.push(state.current);
-            chrome.runtime.sendMessage({ type: 'WAIT_FOR_IMAGES' });
-            void reportSelection();
-            return;
+      if (state.current) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        ev.stopImmediatePropagation();
+        if (!ev.shiftKey) {
+          state.locked = [];
+          deactivate();
         }
+        if (!state.locked.includes(state.current)) state.locked.push(state.current);
+        chrome.runtime.sendMessage({ type: 'WAIT_FOR_IMAGES' });
+        void reportSelection();
+        return;
+      }
     }
 
     ev.preventDefault();
@@ -148,39 +173,42 @@ if (!window.__madcapture_selector_booted__) {
   function activate(): void {
     if (state.active) return;
     state.active = true;
+    state.locked = [];
+    state.current = undefined;
     ensureOverlay();
-    
-    // Capture phase listeners on window to intercept and handle clicks
+
     window.addEventListener('click', stopEvents, true);
     window.addEventListener('mousedown', stopEvents, true);
     window.addEventListener('mouseup', stopEvents, true);
     window.addEventListener('pointerdown', stopEvents, true);
     window.addEventListener('pointerup', stopEvents, true);
     window.addEventListener('dblclick', stopEvents, true);
-    
+
     document.addEventListener('pointermove', onMove, true);
     document.addEventListener('keydown', onKey, true);
-    
+
     document.body.style.cursor = 'crosshair';
   }
 
   function deactivate(): void {
     if (!state.active) return;
     state.active = false;
-    
+
     window.removeEventListener('click', stopEvents, true);
     window.removeEventListener('mousedown', stopEvents, true);
     window.removeEventListener('mouseup', stopEvents, true);
     window.removeEventListener('pointerdown', stopEvents, true);
     window.removeEventListener('pointerup', stopEvents, true);
     window.removeEventListener('dblclick', stopEvents, true);
-    
+
     document.removeEventListener('pointermove', onMove, true);
     document.removeEventListener('keydown', onKey, true);
     document.body.style.cursor = '';
-    
+
     state.overlay?.remove();
+    state.shield?.remove();
     state.overlay = undefined;
+    state.shield = undefined;
   }
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -192,12 +220,190 @@ if (!window.__madcapture_selector_booted__) {
     if (msg.type === 'EXTRACT_PAGE_IMAGES') {
       (async () => {
         chrome.runtime.sendMessage({ type: 'WAIT_FOR_IMAGES' });
-        // Scan the whole body
-        const images = await extractImagesFromRoots([document.body]);
-        chrome.runtime.sendMessage({ type: 'PAGE_IMAGES_FOUND', images });
+        try {
+          const images = await extractImagesFromRoots([document.body]);
+          chrome.runtime.sendMessage({ type: 'PAGE_IMAGES_FOUND', images });
+        } catch (error) {
+          chrome.runtime.sendMessage({
+            type: 'PAGE_IMAGES_FOUND',
+            images: [],
+            error: (error as Error).message
+          });
+        }
       })();
       sendResponse({ ok: true });
     }
+    if (msg.type === 'LOCATE_IMAGE_ON_PAGE') {
+      (async () => {
+        try {
+          const result = await locateAndHighlight(msg.url as string, msg.pageX as number | undefined, msg.pageY as number | undefined);
+          sendResponse(result);
+        } catch (error) {
+          sendResponse({ ok: false, error: (error as Error).message });
+        }
+      })();
+      return true;
+    }
     return true;
   });
+}
+
+function normalizeUrl(input: string, base = location.href): string {
+  try {
+    const u = new URL(input, base);
+    u.hash = '';
+    return u.toString();
+  } catch {
+    return input;
+  }
+}
+
+function srcsetUrls(srcset: string): string[] {
+  return srcset
+    .split(',')
+    .map((part) => part.trim().split(/\s+/)[0])
+    .filter(Boolean);
+}
+
+function extractCssUrls(value: string): string[] {
+  const urls: string[] = [];
+  const re = /url\((['"]?)(.*?)\1\)/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(value))) {
+    if (match[2]) urls.push(match[2]);
+  }
+  return urls;
+}
+
+function findCandidates(targetUrl: string): Element[] {
+  const targetNorm = normalizeUrl(targetUrl);
+  const candidates: Element[] = [];
+
+  for (const img of Array.from(document.images)) {
+    const srcs = [img.currentSrc, img.src].filter(Boolean).map((u) => normalizeUrl(u));
+    if (srcs.includes(targetNorm)) {
+      candidates.push(img);
+      continue;
+    }
+    if (img.srcset) {
+      const urls = srcsetUrls(img.srcset).map((u) => normalizeUrl(u));
+      if (urls.includes(targetNorm)) candidates.push(img);
+    }
+  }
+
+  for (const source of Array.from(document.querySelectorAll('source'))) {
+    const srcset = (source as HTMLSourceElement).srcset || source.getAttribute('srcset') || '';
+    if (!srcset) continue;
+    const urls = srcsetUrls(srcset).map((u) => normalizeUrl(u));
+    if (urls.includes(targetNorm)) {
+      candidates.push(source.parentElement ?? source);
+    }
+  }
+
+  for (const video of Array.from(document.querySelectorAll('video'))) {
+    const poster = (video as HTMLVideoElement).poster;
+    if (poster && normalizeUrl(poster) === targetNorm) candidates.push(video);
+  }
+
+  for (const el of Array.from(document.querySelectorAll<HTMLElement>('*'))) {
+    const bg = getComputedStyle(el).backgroundImage;
+    if (!bg || bg === 'none') continue;
+    const urls = extractCssUrls(bg).map((u) => normalizeUrl(u));
+    if (urls.includes(targetNorm)) candidates.push(el);
+  }
+
+  return candidates;
+}
+
+function pickClosest(candidates: Element[], pageX?: number, pageY?: number): Element | null {
+  if (!candidates.length) return null;
+  if (!Number.isFinite(pageX) || !Number.isFinite(pageY)) return candidates[0];
+  let best = candidates[0];
+  let bestDist = Number.POSITIVE_INFINITY;
+  for (const el of candidates) {
+    const rect = el.getBoundingClientRect();
+    const cx = rect.left + window.scrollX + rect.width / 2;
+    const cy = rect.top + window.scrollY + rect.height / 2;
+    const dx = cx - (pageX as number);
+    const dy = cy - (pageY as number);
+    const dist = dx * dx + dy * dy;
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = el;
+    }
+  }
+  return best;
+}
+
+async function highlightElement(el: Element): Promise<void> {
+  el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+  await waitForScrollStop();
+
+  const rect = el.getBoundingClientRect();
+  if (rect.width === 0 && rect.height === 0) return;
+
+  const overlay = document.createElement('div');
+  overlay.style.position = 'fixed';
+  overlay.style.left = `${rect.left}px`;
+  overlay.style.top = `${rect.top}px`;
+  overlay.style.width = `${rect.width}px`;
+  overlay.style.height = `${rect.height}px`;
+  overlay.style.border = '2px solid #f2c94c';
+  overlay.style.boxShadow = '0 0 0 2px rgba(242, 201, 76, 0.6), 0 0 20px rgba(242, 201, 76, 0.45)';
+  overlay.style.borderRadius = '6px';
+  overlay.style.pointerEvents = 'none';
+  overlay.style.zIndex = '2147483647';
+  overlay.style.transition = 'opacity 0.6s ease';
+  document.documentElement.appendChild(overlay);
+
+  setTimeout(() => {
+    overlay.style.opacity = '0';
+  }, 800);
+  setTimeout(() => {
+    overlay.remove();
+  }, 1400);
+}
+
+async function waitForScrollStop(timeoutMs = 2500, idleMs = 200): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let idleTimer: number | undefined;
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (idleTimer) window.clearTimeout(idleTimer);
+      window.removeEventListener('scroll', onScroll, true);
+      resolve();
+    };
+
+    const onScroll = () => {
+      if (idleTimer) window.clearTimeout(idleTimer);
+      idleTimer = window.setTimeout(finish, idleMs);
+    };
+
+    window.addEventListener('scroll', onScroll, true);
+    idleTimer = window.setTimeout(finish, idleMs);
+    window.setTimeout(finish, timeoutMs);
+  });
+}
+
+async function locateAndHighlight(url: string, pageX?: number, pageY?: number): Promise<{ ok: boolean; error?: string; level?: 'warn' | 'error' }> {
+  if (!url) return { ok: false, error: 'Missing image url', level: 'error' };
+  const candidates = findCandidates(url);
+  let target = pickClosest(candidates, pageX, pageY);
+
+  if (!target && Number.isFinite(pageY)) {
+    window.scrollTo({ top: Math.max(0, (pageY as number) - window.innerHeight / 2), behavior: 'smooth' });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    if (Number.isFinite(pageX)) {
+      const x = Math.min(window.innerWidth - 1, Math.max(0, (pageX as number) - window.scrollX));
+      const y = Math.min(window.innerHeight - 1, Math.max(0, (pageY as number) - window.scrollY));
+      target = document.elementFromPoint(x, y) || null;
+    }
+  }
+
+  if (!target) return { ok: false, error: 'Could not locate image on page', level: 'warn' };
+  await highlightElement(target);
+  return { ok: true };
 }

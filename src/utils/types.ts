@@ -23,6 +23,8 @@ export interface ExtractedImage {
   bytes?: number;
   estimatedBytes?: number;
   previewUrl?: string;
+  pageX?: number;
+  pageY?: number;
 }
 
 export interface SelectionPayload {
@@ -33,7 +35,7 @@ export interface SelectionPayload {
 export type DesiredFormat = 'original' | 'image/png' | 'image/jpeg' | 'image/webp';
 
 export interface NamingOptions {
-  prefix: string;
-  folderName: string;
+  baseName: string;
+  zeroPad?: number;
+  folderName?: string;
 }
-

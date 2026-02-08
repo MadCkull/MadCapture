@@ -8,7 +8,9 @@ async function resolveSize(url: string): Promise<{ bytes?: number; unknown?: boo
   const cachedMem = sizeCache.get(url);
   if (cachedMem && Date.now() - cachedMem.at < TTL) return cachedMem;
 
-  const cachedStorage = (await chrome.storage.local.get(`size:${url}`))[`size:${url}`] as { bytes?: number; at: number } | undefined;
+  const cachedStorage = (await chrome.storage.local.get(`size:${url}`))[`size:${url}`] as
+    | { bytes?: number; at: number }
+    | undefined;
   if (cachedStorage && Date.now() - cachedStorage.at < TTL) {
     sizeCache.set(url, cachedStorage);
     return cachedStorage;
@@ -39,11 +41,6 @@ async function resolveSize(url: string): Promise<{ bytes?: number; unknown?: boo
 }
 
 async function fetchBytes(url: string): Promise<ArrayBuffer> {
-  if (url.startsWith('data:')) {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error('Failed to fetch data URL');
-    return res.arrayBuffer();
-  }
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
   return response.arrayBuffer();
@@ -52,31 +49,28 @@ async function fetchBytes(url: string): Promise<ArrayBuffer> {
 async function downloadZip(items: Array<{ filename: string; bytes: number[] }>, zipName: string): Promise<number> {
   const zip = new JSZip();
   for (const item of items) {
-    // Ensure we are adding valid data
     if (item.bytes && item.bytes.length > 0) {
-        zip.file(item.filename, new Uint8Array(item.bytes));
+      zip.file(item.filename, new Uint8Array(item.bytes));
     }
   }
-  
-  const blob = await zip.generateAsync({ 
+
+  const blob = await zip.generateAsync({
     type: 'blob',
     compression: 'DEFLATE',
     compressionOptions: { level: 9 }
   });
-  
+
   const url = URL.createObjectURL(blob);
-  const id = await chrome.downloads.download({ 
-    url, 
-    filename: zipName, 
+  const id = await chrome.downloads.download({
+    url,
+    filename: zipName,
     saveAs: false,
     conflictAction: 'uniquify'
   });
-  
-  // Clean up URL after download starts
+
   setTimeout(() => URL.revokeObjectURL(url), 120_000);
   return id;
 }
-
 
 async function toggleSelector(tabId: number): Promise<{ active: boolean }> {
   if (!injectedTabs.has(tabId)) {
@@ -96,32 +90,30 @@ chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((error) => console.error(error));
 });
 
-// Global Map for near-instant naming lookup to avoid Windows naming failures
 const pendingNames = new Map<string, string>();
 
 async function addLog(msg: string) {
-    const timestamp = new Date().toLocaleTimeString();
-    const entry = `[${timestamp}] ${msg}`;
-    console.log(entry);
-    const data = await chrome.storage.local.get('logs');
-    const logs = data.logs || [];
-    logs.push(entry);
-    // Keep last 100 logs
-    if (logs.length > 100) logs.shift();
-    await chrome.storage.local.set({ logs });
+  const timestamp = new Date().toLocaleTimeString();
+  const entry = `[${timestamp}] ${msg}`;
+  console.log(entry);
+  const data = await chrome.storage.local.get('logs');
+  const logs = data.logs || [];
+  logs.push(entry);
+  if (logs.length > 100) logs.shift();
+  await chrome.storage.local.set({ logs });
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     if (message.type === 'GET_LOGS') {
-        const data = await chrome.storage.local.get('logs');
-        sendResponse({ logs: data.logs || [] });
-        return;
+      const data = await chrome.storage.local.get('logs');
+      sendResponse({ logs: data.logs || [] });
+      return;
     }
     if (message.type === 'CLEAR_LOGS') {
-        await chrome.storage.local.set({ logs: [] });
-        sendResponse({ ok: true });
-        return;
+      await chrome.storage.local.set({ logs: [] });
+      sendResponse({ ok: true });
+      return;
     }
     if (message.type === 'REGISTER_NAME') {
       await addLog(`Registering name: "${message.filename}" for URL: ${message.url.slice(0, 50)}...`);
@@ -165,24 +157,66 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
     if (message.type === 'SCAN_PAGE_IMAGES') {
-      (async () => {
-        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-        const tabId = tabs[0]?.id;
-        if (tabId) {
-            if (!injectedTabs.has(tabId)) {
-                await chrome.scripting.executeScript({ target: { tabId }, files: ['content/selectorOverlay.js'] });
-                injectedTabs.add(tabId);
-            }
-            try {
-                await chrome.tabs.sendMessage(tabId, { type: 'EXTRACT_PAGE_IMAGES' });
-            } catch (e) {
-                // Retry once if message failed (e.g. script was there but connection lost)
-                await chrome.scripting.executeScript({ target: { tabId }, files: ['content/selectorOverlay.js'] });
-                await chrome.tabs.sendMessage(tabId, { type: 'EXTRACT_PAGE_IMAGES' });
-            }
-        }
-      })().catch(err => console.error('SCAN_PAGE_IMAGES failed:', err));
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tabId = tabs[0]?.id;
+      if (!tabId) {
+        sendResponse({ ok: false, error: 'No active tab' });
+        return;
+      }
+      if (!injectedTabs.has(tabId)) {
+        await chrome.scripting.executeScript({ target: { tabId }, files: ['content/selectorOverlay.js'] });
+        injectedTabs.add(tabId);
+      }
+      try {
+        await chrome.tabs.sendMessage(tabId, { type: 'EXTRACT_PAGE_IMAGES' });
+      } catch {
+        await chrome.scripting.executeScript({ target: { tabId }, files: ['content/selectorOverlay.js'] });
+        injectedTabs.add(tabId);
+        await chrome.tabs.sendMessage(tabId, { type: 'EXTRACT_PAGE_IMAGES' });
+      }
       sendResponse({ ok: true });
+      return;
+    }
+    if (message.type === 'LOCATE_IMAGE_ON_PAGE') {
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tabId = tabs[0]?.id;
+      if (!tabId) {
+        sendResponse({ ok: false, error: 'No active tab' });
+        return;
+      }
+      if (!injectedTabs.has(tabId)) {
+        try {
+          await chrome.scripting.executeScript({ target: { tabId }, files: ['content/selectorOverlay.js'] });
+          injectedTabs.add(tabId);
+        } catch (error) {
+          const messageText = (error as Error).message || 'Unable to inject content script';
+          sendResponse({ ok: false, error: messageText, level: 'error' });
+          return;
+        }
+      }
+      try {
+        const result = await chrome.tabs.sendMessage(tabId, {
+          type: 'LOCATE_IMAGE_ON_PAGE',
+          url: message.url,
+          pageX: message.pageX,
+          pageY: message.pageY
+        });
+        if (!result || typeof result.ok !== 'boolean') {
+          sendResponse({ ok: false, error: 'No response from page. Reload the tab and try again.', level: 'warn' });
+          return;
+        }
+        sendResponse(result);
+      } catch (error) {
+        const raw = (error as Error).message || 'Unable to contact page';
+        let friendly = raw;
+        if (/Receiving end does not exist|Could not establish connection/i.test(raw)) {
+          friendly = 'Content script not ready. Reload the page and try again.';
+        }
+        if (/Cannot access a chrome|Extension cannot access|Cannot access contents of the page/i.test(raw)) {
+          friendly = 'This page is restricted by Chrome and cannot be inspected.';
+        }
+        sendResponse({ ok: false, error: friendly, level: 'warn' });
+      }
       return;
     }
     sendResponse({ ok: false, error: 'Unknown message' });
@@ -190,45 +224,54 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
-// Download naming interceptor - the "Final Boss" fix for Windows naming/folders
+chrome.commands.onCommand.addListener(async (command) => {
+  if (command !== 'toggle-selector') return;
+  try {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    const tabId = tabs[0]?.id;
+    if (!tabId) return;
+    await toggleSelector(tabId);
+  } catch {
+    // ignore
+  }
+});
+
 chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
   (async () => {
-      await addLog(`Intercepting Download #${item.id}. URL: ${item.url.slice(0, 50)}...`);
-      
-      // 1. Try synchronous Map first
-      let suggestedName = pendingNames.get(item.finalUrl) || pendingNames.get(item.url);
-      
-      if (suggestedName) {
-        const finalFilename = suggestedName.replace(/\\/g, '/').replace(/^\//, '');
-        await addLog(`Sync Map Hit! Forcing name: "${finalFilename}"`);
-        suggest({ 
-            filename: finalFilename, 
-            conflictAction: 'uniquify' 
-        });
-        pendingNames.delete(item.finalUrl);
-        pendingNames.delete(item.url);
-        return;
-      }
+    await addLog(`Intercepting Download #${item.id}. URL: ${item.url.slice(0, 50)}...`);
 
-      // 2. Fallback to storage lookup
-      const data = await chrome.storage.local.get('downloadRegistry');
-      const registry = data.downloadRegistry || {};
-      suggestedName = registry[item.finalUrl] || registry[item.url];
-      
-      if (suggestedName) {
-        const finalFilename = suggestedName.replace(/\\/g, '/').replace(/^\//, '');
-        await addLog(`Async Storage Hit! Forcing name: "${finalFilename}"`);
-        suggest({ 
-          filename: finalFilename,
-          conflictAction: 'uniquify' 
-        });
-        delete registry[item.finalUrl];
-        delete registry[item.url];
-        await chrome.storage.local.set({ downloadRegistry: registry });
-      } else {
-        await addLog(`No suggested name found in Map or Registry. Letting Chrome decide.`);
-        suggest();
-      }
+    let suggestedName = pendingNames.get(item.finalUrl) || pendingNames.get(item.url);
+
+    if (suggestedName) {
+      const finalFilename = suggestedName.replace(/\\/g, '/').replace(/^\//, '');
+      await addLog(`Sync Map Hit! Forcing name: "${finalFilename}"`);
+      suggest({
+        filename: finalFilename,
+        conflictAction: 'uniquify'
+      });
+      pendingNames.delete(item.finalUrl);
+      pendingNames.delete(item.url);
+      return;
+    }
+
+    const data = await chrome.storage.local.get('downloadRegistry');
+    const registry = data.downloadRegistry || {};
+    suggestedName = registry[item.finalUrl] || registry[item.url];
+
+    if (suggestedName) {
+      const finalFilename = suggestedName.replace(/\\/g, '/').replace(/^\//, '');
+      await addLog(`Async Storage Hit! Forcing name: "${finalFilename}"`);
+      suggest({
+        filename: finalFilename,
+        conflictAction: 'uniquify'
+      });
+      delete registry[item.finalUrl];
+      delete registry[item.url];
+      await chrome.storage.local.set({ downloadRegistry: registry });
+    } else {
+      await addLog(`No suggested name found in Map or Registry. Letting Chrome decide.`);
+      suggest();
+    }
   })();
-  return true; 
+  return true;
 });

@@ -1,11 +1,11 @@
 import { buildFilenames } from '../../utils/naming';
 
-test('buildFilenames uses template and zero pad', () => {
-  const names = buildFilenames(2, { template: 'Pic ({index}).{ext}', startIndex: 1, zeroPad: 3, includeHint: true }, ['one', 'two'], 'webp');
-  expect(names).toEqual(['Pic (001).webp', 'Pic (002).webp']);
+test('buildFilenames uses base name with numbering and extension', () => {
+  const names = buildFilenames(3, { baseName: 'Insta Image' }, 'png');
+  expect(names).toEqual(['Insta Image (1).png', 'Insta Image (2).png', 'Insta Image (3).png']);
 });
 
-test('buildFilenames can disable hint token replacement', () => {
-  const names = buildFilenames(1, { template: '{name}-{index}.{ext}', startIndex: 7, zeroPad: 2, includeHint: false }, ['origin'], 'png');
-  expect(names).toEqual(['Pic-07.png']);
+test('buildFilenames falls back to Pic when base name is empty', () => {
+  const names = buildFilenames(2, { baseName: '   ' }, 'webp');
+  expect(names).toEqual(['Pic (1).webp', 'Pic (2).webp']);
 });

@@ -9,7 +9,12 @@ function idFor(url: string, idx: number): string {
   return `${idx}-${url.slice(0, 80)}`;
 }
 
-function fromImg(el: HTMLImageElement, idx: number): ExtractedImage[] {
+function posFor(el: Element): { pageX: number; pageY: number } {
+  const rect = el.getBoundingClientRect();
+  return { pageX: rect.left + window.scrollX, pageY: rect.top + window.scrollY };
+}
+
+function fromImg(el: HTMLImageElement, idx: number, pos?: { pageX: number; pageY: number }): ExtractedImage[] {
   const urls = new Set<string>();
   if (el.src) urls.add(canonicalizeUrl(el.src));
   if (el.currentSrc) urls.add(canonicalizeUrl(el.currentSrc));
@@ -22,7 +27,9 @@ function fromImg(el: HTMLImageElement, idx: number): ExtractedImage[] {
     width: el.naturalWidth,
     height: el.naturalHeight,
     filenameHint: filenameFromUrl(url),
-    srcsetCandidates: el.srcset ? parseSrcset(el.srcset).map((c) => c.url) : undefined
+    srcsetCandidates: el.srcset ? parseSrcset(el.srcset).map((c) => c.url) : undefined,
+    pageX: pos?.pageX,
+    pageY: pos?.pageY
   }));
 }
 
@@ -42,98 +49,149 @@ export async function extractImagesFromRoots(roots: Element[]): Promise<Extracte
   let idx = 0;
 
   for (const root of roots) {
-    if (root.tagName.toLowerCase() === 'img') {
-        items.push(...fromImg(root as HTMLImageElement, idx++));
+    try {
+      await maybeNudgeLazyLoad(root);
+    } catch {
+      // ignore
     }
-    
+
     const all = [root, ...root.querySelectorAll('*')];
     for (const el of all) {
-      if (el instanceof HTMLImageElement) items.push(...fromImg(el, idx++));
-      if (el instanceof HTMLPictureElement) {
-        const img = el.querySelector('img');
-        if (img) items.push(...fromImg(img, idx++));
-        
-        for (const source of el.querySelectorAll('source')) {
-          const srcset = source.srcset || source.getAttribute('srcset') || '';
-          parseSrcset(srcset).forEach((c) => items.push({
-            id: idFor(c.url, idx++),
-            url: canonicalizeUrl(c.url),
-            originType: 'picture',
-            filenameHint: filenameFromUrl(c.url)
-          }));
+      try {
+        const pos = posFor(el);
+        if (el instanceof HTMLImageElement) items.push(...fromImg(el, idx++, pos));
+
+        if (el instanceof HTMLPictureElement) {
+          for (const source of el.querySelectorAll('source')) {
+            const srcset = source.srcset || source.getAttribute('srcset') || '';
+            parseSrcset(srcset).forEach((c) =>
+              items.push({
+                id: idFor(c.url, idx++),
+                url: canonicalizeUrl(c.url),
+                originType: 'picture',
+                filenameHint: filenameFromUrl(c.url),
+                pageX: pos.pageX,
+                pageY: pos.pageY
+              })
+            );
+          }
         }
-      }
-      if (el instanceof SVGElement) {
-        try {
-          // Clone to avoid modifying the original if we need to do anything
-          const clone = el.cloneNode(true) as SVGElement;
-          if (!clone.getAttribute('xmlns')) clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-          const payload = new XMLSerializer().serializeToString(clone);
-          const dataUrl = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(payload)))}`;
-          items.push({ id: idFor(dataUrl, idx++), url: dataUrl, originType: 'inline-svg', isInlineSVG: true, isDataUrl: true, filenameHint: 'vector.svg' });
-        } catch (e) {
-          console.warn('SVG extraction failed', e);
+
+        if (el instanceof SVGElement) {
+          try {
+            const clone = el.cloneNode(true) as SVGElement;
+            if (!clone.getAttribute('xmlns')) clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+            const payload = new XMLSerializer().serializeToString(clone);
+            const dataUrl = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(payload)))}`;
+            items.push({
+              id: idFor(dataUrl, idx++),
+              url: dataUrl,
+              originType: 'inline-svg',
+              isInlineSVG: true,
+              isDataUrl: true,
+              filenameHint: 'vector.svg',
+              pageX: pos.pageX,
+              pageY: pos.pageY
+            });
+          } catch (e) {
+            console.warn('SVG extraction failed', e);
+          }
         }
-      }
-      if (el instanceof HTMLCanvasElement) {
-        try {
-          const dataUrl = el.toDataURL('image/png');
-          items.push({ id: idFor(dataUrl, idx++), url: dataUrl, originType: 'canvas', isCanvas: true, isDataUrl: true, width: el.width, height: el.height, filenameHint: 'canvas.png' });
-        } catch (e) {
+
+        if (el instanceof HTMLCanvasElement) {
+          try {
+            const dataUrl = el.toDataURL('image/png');
+            items.push({
+              id: idFor(dataUrl, idx++),
+              url: dataUrl,
+              originType: 'canvas',
+              isCanvas: true,
+              isDataUrl: true,
+              width: el.width,
+              height: el.height,
+              filenameHint: 'canvas.png',
+              pageX: pos.pageX,
+              pageY: pos.pageY
+            });
+          } catch (e) {
             console.warn('Canvas extraction failed', e);
+          }
         }
-      }
-      // CSS Backgrounds - check parents too if they have bg
-      let curr: Element | null = el;
-      while (curr && curr !== root.parentElement) {
-          const bg = getComputedStyle(curr).getPropertyValue('background-image');
+
+        if (el instanceof HTMLVideoElement && el.poster) {
+          const url = canonicalizeUrl(el.poster);
+          items.push({
+            id: idFor(url, idx++),
+            url,
+            originType: 'video-poster',
+            filenameHint: filenameFromUrl(url),
+            pageX: pos.pageX,
+            pageY: pos.pageY
+          });
+        }
+
+        if (el instanceof HTMLElement) {
+          const bg = getComputedStyle(el).getPropertyValue('background-image');
           if (bg && bg !== 'none') {
             extractBackgroundImageUrls(bg).forEach((url) => {
-                const abs = canonicalizeUrl(url);
-                items.push({ id: idFor(abs, idx++), url: abs, originType: 'css-background', filenameHint: filenameFromUrl(abs) });
+              const abs = canonicalizeUrl(url);
+            items.push({
+              id: idFor(abs, idx++),
+              url: abs,
+              originType: 'css-background',
+              filenameHint: filenameFromUrl(abs),
+              pageX: pos.pageX,
+              pageY: pos.pageY
+            });
+          });
+        }
+        }
+
+        for (const attr of LAZY_ATTRS) {
+          const value = el.getAttribute(attr);
+          if (!value) continue;
+          if (attr.includes('srcset')) {
+            parseSrcset(value).forEach((candidate) =>
+              items.push({
+                id: idFor(candidate.url, idx++),
+                url: canonicalizeUrl(candidate.url),
+                originType: 'lazy-attr',
+                lazyHint: true,
+                filenameHint: filenameFromUrl(candidate.url),
+                pageX: pos.pageX,
+                pageY: pos.pageY
+              })
+            );
+          } else {
+            const u = canonicalizeUrl(value);
+            items.push({
+              id: idFor(u, idx++),
+              url: u,
+              originType: 'lazy-attr',
+              lazyHint: true,
+              filenameHint: filenameFromUrl(u),
+              pageX: pos.pageX,
+              pageY: pos.pageY
             });
           }
-          if (curr === root) break;
-          curr = curr.parentElement;
-      }
-
-      for (const attr of LAZY_ATTRS) {
-        const value = el.getAttribute(attr);
-        if (!value) continue;
-        if (attr.includes('srcset')) {
-          parseSrcset(value).forEach((candidate) => items.push({
-            id: idFor(candidate.url, idx++),
-            url: canonicalizeUrl(candidate.url),
-            originType: 'lazy-attr',
-            lazyHint: true,
-            filenameHint: filenameFromUrl(candidate.url)
-          }));
-        } else {
-          const u = canonicalizeUrl(value);
-          items.push({ id: idFor(u, idx++), url: u, originType: 'lazy-attr', lazyHint: true, filenameHint: filenameFromUrl(u) });
         }
+      } catch (e) {
+        console.warn('Element extraction failed', e);
       }
     }
   }
 
   return items
     .filter((item) => {
-      // Exclude SVGs (user said exclude .svg and similar things)
-      if (item.url.toLowerCase().endsWith('.svg') || item.url.includes('svg+xml')) return false;
-      
-      // Filter out invalid/empty data URLs or very small icons
-      if (item.url.startsWith('data:')) {
-          if (item.url.length < 100) return false;
-          const mime = extractDataUrlMime(item.url);
-          if (mime.includes('svg')) return false;
-      }
+      const url = item.url.toLowerCase();
+      if (url.endsWith('.svg') || url.includes('svg+xml')) return false;
       return true;
     })
     .map((item) => {
       if (item.url.startsWith('data:')) {
         const mime = extractDataUrlMime(item.url);
         const ext = mime.split('/')[1]?.split('+')[0] || 'bin';
-        return { ...item, isDataUrl: true, originType: 'data-url', filenameHint: item.filenameHint ?? `data.${ext}` };
+        return { ...item, isDataUrl: true, filenameHint: item.filenameHint ?? `data.${ext}` };
       }
       return item;
     })
