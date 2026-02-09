@@ -1,5 +1,7 @@
 import { extractImagesFromRoots } from './imageExtractor';
 import { ExtractOptions, SelectionPayload } from '../utils/types';
+import { pierceToImage } from './imagePiercer';
+import { getActiveHandler } from '../handlers/registry';
 
 declare global {
   interface Window {
@@ -110,11 +112,28 @@ if (!window.__madcapture_selector_booted__) {
   function expandSelectionRoots(elements: Element[]): Element[] {
     const roots: Element[] = [];
     const seen = new Set<Element>();
+    const handler = getActiveHandler();
+    
     for (const el of elements) {
-      const root = findCaptureRoot(el);
-      if (!seen.has(root)) {
-        seen.add(root);
-        roots.push(root);
+      // Let site handler enhance selection first
+      let enhanced: Element | Element[] = el;
+      if (handler?.enhanceSelection) {
+        try {
+          enhanced = handler.enhanceSelection(el);
+        } catch {
+          enhanced = el;
+        }
+      }
+      
+      // Handle both single element and array results
+      const toProcess = Array.isArray(enhanced) ? enhanced : [enhanced];
+      
+      for (const item of toProcess) {
+        const root = findCaptureRoot(item);
+        if (!seen.has(root)) {
+          seen.add(root);
+          roots.push(root);
+        }
       }
     }
     return roots;
@@ -175,14 +194,45 @@ if (!window.__madcapture_selector_booted__) {
   }
 
   let raf = 0;
+  
+  /**
+   * Smart element detection - pierces through overlays to find actual images
+   */
   function elementUnderPoint(x: number, y: number): Element | null {
-    const list = document.elementsFromPoint(x, y);
-    for (const el of list) {
-      if (state.shield && el === state.shield) continue;
-      if (state.overlay && (el === state.overlay || state.overlay.contains(el))) continue;
-      return el;
+    // Build exclusion list
+    const excludeElements: Element[] = [];
+    if (state.shield) excludeElements.push(state.shield);
+    if (state.overlay) excludeElements.push(state.overlay);
+    
+    // Use smart piercing to find best image element
+    const result = pierceToImage(x, y, {
+      excludeElements,
+      expandToContainer: true,
+    });
+    
+    if (!result) {
+      // Fallback: return first non-excluded element
+      const list = document.elementsFromPoint(x, y);
+      for (const el of list) {
+        if (state.shield && el === state.shield) continue;
+        if (state.overlay && (el === state.overlay || state.overlay.contains(el))) continue;
+        return el;
+      }
+      return null;
     }
-    return null;
+    
+    // Let site handler enhance the result
+    const handler = getActiveHandler();
+    if (handler?.enhanceSelection) {
+      try {
+        const enhanced = handler.enhanceSelection(result.element);
+        return Array.isArray(enhanced) ? enhanced[0] : enhanced;
+      } catch {
+        // Ignore errors, use original result
+      }
+    }
+    
+    return result.element;
   }
 
   function onMove(ev: PointerEvent): void {

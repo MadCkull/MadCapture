@@ -2,6 +2,7 @@ import { extractCssImageCandidates } from '../utils/cssBackground';
 import { parseSrcset, SrcSetCandidate } from '../utils/srcset';
 import { canonicalizeUrl, filenameFromUrl } from '../utils/url';
 import { ExtractedImage, ExtractOptions, OriginType } from '../utils/types';
+import { getActiveHandler } from '../handlers/registry';
 
 const LAZY_ATTRS = ['data-src', 'data-lazy-src', 'data-original', 'data-srcset'];
 const ATTR_HINT_RE = /(src|img|image|photo|poster|thumb|avatar|bg|background|full|orig|large|zoom|raw|hires|highres|media)/i;
@@ -882,6 +883,63 @@ export async function extractImagesFromRoots(
     (root) => root === document.body || root === document.documentElement,
   );
 
+  // === Site-specific handler extraction ===
+  const handler = getActiveHandler();
+  if (handler) {
+    try {
+      // For page-wide scans, use extractPageImages if available
+      if (includeGlobal && handler.extractPageImages) {
+        const handlerImages = handler.extractPageImages(opts);
+        for (const img of handlerImages) {
+          items.push({
+            ...img,
+            id: img.id || idFor(img.url, idx++),
+          });
+          
+          // Try to derive original URL using handler
+          if (opts.deepScan && handler.deriveOriginalUrl) {
+            const original = handler.deriveOriginalUrl(img.url);
+            if (original && original !== img.url) {
+              items.push({
+                id: idFor(original, idx++),
+                url: canonicalizeUrl(original),
+                originType: img.originType,
+                filenameHint: filenameFromUrl(original),
+              });
+            }
+          }
+        }
+      } else {
+        // For selection-based extraction
+        for (const root of roots) {
+          const handlerImages = handler.extractImages(root, opts);
+          for (const img of handlerImages) {
+            items.push({
+              ...img,
+              id: img.id || idFor(img.url, idx++),
+            });
+            
+            // Try to derive original URL using handler
+            if (opts.deepScan && handler.deriveOriginalUrl) {
+              const original = handler.deriveOriginalUrl(img.url);
+              if (original && original !== img.url) {
+                items.push({
+                  id: idFor(original, idx++),
+                  url: canonicalizeUrl(original),
+                  originType: img.originType,
+                  filenameHint: filenameFromUrl(original),
+                });
+              }
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.warn('Site handler extraction failed, falling back to generic:', error);
+    }
+  }
+
+  // === Generic extraction (always run to catch anything handler missed) ===
   if (opts.deepScan && includeGlobal) {
     const linked = collectDocumentLinkedImages();
     linked.forEach((raw) => {
