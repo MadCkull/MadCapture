@@ -23,6 +23,8 @@
   },
   "dependencies": {
     "jszip": "^3.10.1",
-    "piexifjs": "^1.0.6"
+    "parse-srcset": "^1.0.2",
+    "piexifjs": "^1.0.6",
+    "postcss-value-parser": "^4.2.0"
   }
 }

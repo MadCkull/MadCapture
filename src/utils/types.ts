@@ -1,7 +1,13 @@
 export type OriginType =
   | 'img'
+  | 'srcset'
   | 'picture'
   | 'css-background'
+  | 'css-mask'
+  | 'css-content'
+  | 'image-set'
+  | 'link-href'
+  | 'data-attr'
   | 'inline-svg'
   | 'canvas'
   | 'video-poster'
@@ -25,6 +31,15 @@ export interface ExtractedImage {
   previewUrl?: string;
   pageX?: number;
   pageY?: number;
+  hash?: string;
+}
+
+export interface ExtractOptions {
+  deepScan?: boolean;
+  visibleOnly?: boolean;
+  viewportPadding?: number;
+  includeDataUrls?: boolean;
+  includeBlobUrls?: boolean;
 }
 
 export interface SelectionPayload {

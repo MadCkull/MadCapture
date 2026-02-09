@@ -8,7 +8,7 @@ export function renderImageCard(item: ExtractedImage, selected: boolean, highlig
     <div class="card ${selected ? 'selected' : ''} ${highlighted ? 'highlighted' : ''}" data-id="${item.id}">
       <div class="card-image-wrapper">
         <span class="selection-index"></span>
-        <img src="${item.previewUrl || item.url}" alt="${item.filenameHint || 'image'}" loading="lazy" />
+        <img src="${item.previewUrl || item.url}" alt="${item.filenameHint || 'image'}" loading="lazy" decoding="async" referrerpolicy="no-referrer" />
       </div>
       <div class="meta">
         <span class="dimensions">${dimText}</span>

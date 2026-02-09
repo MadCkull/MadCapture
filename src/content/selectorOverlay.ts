@@ -1,11 +1,31 @@
 import { extractImagesFromRoots } from './imageExtractor';
-import { SelectionPayload } from '../utils/types';
+import { ExtractOptions, SelectionPayload } from '../utils/types';
 
 declare global {
   interface Window {
     __madcapture_selector_booted__?: boolean;
+    __madcapture_extract_images__?: (options?: Partial<ExtractOptions>) => Promise<unknown>;
   }
 }
+
+function normalizeExtractOptions(overrides?: Partial<ExtractOptions>): ExtractOptions {
+  const basePadding = Math.min(500, Math.round(window.innerHeight * 0.25));
+  const padding =
+    typeof overrides?.viewportPadding === 'number'
+      ? Math.max(0, overrides.viewportPadding)
+      : basePadding;
+  return {
+    deepScan: overrides?.deepScan ?? false,
+    visibleOnly: overrides?.visibleOnly ?? true,
+    viewportPadding: padding,
+    includeDataUrls: overrides?.includeDataUrls ?? true,
+    includeBlobUrls: overrides?.includeBlobUrls ?? true
+  };
+}
+
+window.__madcapture_extract_images__ = async (options?: Partial<ExtractOptions>) => {
+  return extractImagesFromRoots([document.body], normalizeExtractOptions(options));
+};
 
 if (!window.__madcapture_selector_booted__) {
   window.__madcapture_selector_booted__ = true;
@@ -18,6 +38,7 @@ if (!window.__madcapture_selector_booted__) {
     shield?: HTMLElement;
     box?: HTMLElement;
     tooltip?: HTMLElement;
+    extractOptions?: ExtractOptions;
   };
 
   const state: State = { active: false, locked: [] };
@@ -32,6 +53,71 @@ if (!window.__madcapture_selector_booted__) {
       node = node.parentElement;
     }
     return parts.join(' > ');
+  }
+
+  const IMAGE_HINT_SELECTOR = [
+    'img',
+    'picture',
+    'source[srcset]',
+    'source[src]',
+    'video[poster]',
+    'canvas',
+    'svg',
+    'input[type="image"]',
+    '[style*="background"]',
+    '[style*="url("]',
+    '[data-src]',
+    '[data-srcset]',
+    '[data-lazy-src]',
+    '[data-original]',
+  ].join(',');
+
+  function hasImageHints(el: Element): boolean {
+    if (el instanceof HTMLImageElement) return true;
+    if (el instanceof HTMLVideoElement && el.poster) return true;
+    if (el instanceof HTMLCanvasElement) return true;
+    if (el instanceof SVGElement) return true;
+    if (el instanceof HTMLInputElement && el.type.toLowerCase() === 'image') return true;
+
+    if (el instanceof HTMLElement) {
+      const style = getComputedStyle(el);
+      if (style.backgroundImage && style.backgroundImage !== 'none') return true;
+      if (style.content && style.content !== 'none' && style.content.includes('url(')) return true;
+    }
+
+    return !!el.querySelector(IMAGE_HINT_SELECTOR);
+  }
+
+  function findCaptureRoot(el: Element): Element {
+    let node: Element | null = el;
+    let depth = 0;
+    while (node && depth < 6) {
+      if (
+        node !== document.body &&
+        node !== document.documentElement &&
+        hasImageHints(node)
+      ) {
+        return node;
+      }
+      const parent = node.parentElement;
+      if (!parent || parent === document.body || parent === document.documentElement) break;
+      node = parent;
+      depth += 1;
+    }
+    return el;
+  }
+
+  function expandSelectionRoots(elements: Element[]): Element[] {
+    const roots: Element[] = [];
+    const seen = new Set<Element>();
+    for (const el of elements) {
+      const root = findCaptureRoot(el);
+      if (!seen.has(root)) {
+        seen.add(root);
+        roots.push(root);
+      }
+    }
+    return roots;
   }
 
   function ensureOverlay(): void {
@@ -119,7 +205,9 @@ if (!window.__madcapture_selector_booted__) {
       })
     };
     try {
-      const images = await extractImagesFromRoots(state.locked);
+      const options = state.extractOptions ?? normalizeExtractOptions();
+      const roots = expandSelectionRoots(state.locked);
+      const images = await extractImagesFromRoots(roots, options);
       chrome.runtime.sendMessage({ type: 'SELECTION_LOCKED', payload, images });
     } catch (error) {
       chrome.runtime.sendMessage({
@@ -215,13 +303,17 @@ if (!window.__madcapture_selector_booted__) {
     if (msg.type === 'TOGGLE_SELECTOR') {
       if (state.active) deactivate();
       else activate();
+      state.extractOptions = normalizeExtractOptions(msg.options as Partial<ExtractOptions> | undefined);
       sendResponse({ active: state.active });
     }
     if (msg.type === 'EXTRACT_PAGE_IMAGES') {
       (async () => {
         chrome.runtime.sendMessage({ type: 'WAIT_FOR_IMAGES' });
         try {
-          const images = await extractImagesFromRoots([document.body]);
+          const images = await extractImagesFromRoots(
+            [document.body],
+            normalizeExtractOptions(msg.options as Partial<ExtractOptions> | undefined)
+          );
           chrome.runtime.sendMessage({ type: 'PAGE_IMAGES_FOUND', images });
         } catch (error) {
           chrome.runtime.sendMessage({
@@ -231,6 +323,10 @@ if (!window.__madcapture_selector_booted__) {
           });
         }
       })();
+      sendResponse({ ok: true });
+    }
+    if (msg.type === 'SET_EXTRACT_OPTIONS') {
+      state.extractOptions = normalizeExtractOptions(msg.options as Partial<ExtractOptions> | undefined);
       sendResponse({ ok: true });
     }
     if (msg.type === 'LOCATE_IMAGE_ON_PAGE') {

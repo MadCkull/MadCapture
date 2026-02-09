@@ -2401,6 +2401,7 @@ var import_jszip = __toESM(require_jszip_min(), 1);
 var TTL = 24 * 60 * 60 * 1e3;
 var sizeCache = /* @__PURE__ */ new Map();
 var injectedTabs = /* @__PURE__ */ new Set();
+var lastExtractOptions;
 async function resolveSize(url) {
   const cachedMem = sizeCache.get(url);
   if (cachedMem && Date.now() - cachedMem.at < TTL) return cachedMem;
@@ -2457,18 +2458,56 @@ async function downloadZip(items, zipName) {
   setTimeout(() => URL.revokeObjectURL(url), 12e4);
   return id;
 }
-async function toggleSelector(tabId) {
+async function toggleSelector(tabId, options) {
   if (!injectedTabs.has(tabId)) {
     await chrome.scripting.executeScript({ target: { tabId }, files: ["content/selectorOverlay.js"] });
     injectedTabs.add(tabId);
   }
   try {
-    return await chrome.tabs.sendMessage(tabId, { type: "TOGGLE_SELECTOR" });
+    return await chrome.tabs.sendMessage(tabId, { type: "TOGGLE_SELECTOR", options });
   } catch {
     await chrome.scripting.executeScript({ target: { tabId }, files: ["content/selectorOverlay.js"] });
     injectedTabs.add(tabId);
-    return chrome.tabs.sendMessage(tabId, { type: "TOGGLE_SELECTOR" });
+    return chrome.tabs.sendMessage(tabId, { type: "TOGGLE_SELECTOR", options });
   }
+}
+async function ensureSelectorInjected(tabId, allFrames = false) {
+  await chrome.scripting.executeScript({
+    target: { tabId, allFrames },
+    files: ["content/selectorOverlay.js"]
+  });
+  injectedTabs.add(tabId);
+}
+async function scanAllFrames(tabId, options) {
+  await ensureSelectorInjected(tabId, true);
+  const results = await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    args: [options],
+    func: async (opts) => {
+      const extractor = window.__madcapture_extract_images__;
+      if (typeof extractor !== "function") return [];
+      try {
+        return await extractor(opts);
+      } catch {
+        return [];
+      }
+    }
+  });
+  const images = [];
+  for (const frame of results) {
+    const result = frame.result;
+    if (Array.isArray(result)) images.push(...result);
+  }
+  return images;
+}
+async function resolveDeepScanOptions(provided) {
+  if (provided) return provided;
+  if (lastExtractOptions) return lastExtractOptions;
+  const data = await chrome.storage.local.get("deepScan");
+  if (data.deepScan) {
+    return { deepScan: true, visibleOnly: false };
+  }
+  return void 0;
 }
 chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((error) => console.error(error));
@@ -2489,6 +2528,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "GET_LOGS") {
       const data = await chrome.storage.local.get("logs");
       sendResponse({ logs: data.logs || [] });
+      return;
+    }
+    if (message.type === "ADD_LOG") {
+      if (typeof message.msg === "string" && message.msg.trim()) {
+        await addLog(message.msg.trim());
+      }
+      sendResponse({ ok: true });
       return;
     }
     if (message.type === "CLEAR_LOGS") {
@@ -2533,8 +2579,37 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "TOGGLE_SELECTOR_FOR_TAB") {
       const tabId = sender.tab?.id ?? (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
       if (!tabId) throw new Error("No active tab id");
-      const result = await toggleSelector(tabId);
+      const resolved = await resolveDeepScanOptions(message.options);
+      const result = await toggleSelector(tabId, resolved);
       sendResponse(result);
+      return;
+    }
+    if (message.type === "SET_EXTRACT_OPTIONS_FOR_TAB") {
+      const tabId = sender.tab?.id ?? (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
+      if (!tabId) {
+        sendResponse({ ok: false, error: "No active tab id" });
+        return;
+      }
+      if (!injectedTabs.has(tabId)) {
+        try {
+          await ensureSelectorInjected(tabId);
+        } catch (error) {
+          const messageText = error.message || "Unable to inject content script";
+          sendResponse({ ok: false, error: messageText });
+          return;
+        }
+      }
+      try {
+        lastExtractOptions = message.options;
+        await chrome.tabs.sendMessage(tabId, {
+          type: "SET_EXTRACT_OPTIONS",
+          options: message.options
+        });
+        sendResponse({ ok: true });
+      } catch (error) {
+        const messageText = error.message || "Unable to update options";
+        sendResponse({ ok: false, error: messageText });
+      }
       return;
     }
     if (message.type === "SCAN_PAGE_IMAGES") {
@@ -2544,16 +2619,42 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: false, error: "No active tab" });
         return;
       }
+      const options = message.options;
+      if (options?.deepScan) {
+        void (async () => {
+          try {
+            const images = await scanAllFrames(tabId, options);
+            chrome.runtime.sendMessage({ type: "PAGE_IMAGES_FOUND", images });
+          } catch (error) {
+            const raw = error.message || "Deep scan failed";
+            try {
+              await ensureSelectorInjected(tabId);
+              await chrome.tabs.sendMessage(tabId, {
+                type: "EXTRACT_PAGE_IMAGES",
+                options
+              });
+            } catch {
+              chrome.runtime.sendMessage({ type: "PAGE_IMAGES_FOUND", images: [], error: raw });
+            }
+          }
+        })();
+        sendResponse({ ok: true });
+        return;
+      }
       if (!injectedTabs.has(tabId)) {
-        await chrome.scripting.executeScript({ target: { tabId }, files: ["content/selectorOverlay.js"] });
-        injectedTabs.add(tabId);
+        await ensureSelectorInjected(tabId);
       }
       try {
-        await chrome.tabs.sendMessage(tabId, { type: "EXTRACT_PAGE_IMAGES" });
+        await chrome.tabs.sendMessage(tabId, {
+          type: "EXTRACT_PAGE_IMAGES",
+          options
+        });
       } catch {
-        await chrome.scripting.executeScript({ target: { tabId }, files: ["content/selectorOverlay.js"] });
-        injectedTabs.add(tabId);
-        await chrome.tabs.sendMessage(tabId, { type: "EXTRACT_PAGE_IMAGES" });
+        await ensureSelectorInjected(tabId);
+        await chrome.tabs.sendMessage(tabId, {
+          type: "EXTRACT_PAGE_IMAGES",
+          options
+        });
       }
       sendResponse({ ok: true });
       return;
@@ -2610,7 +2711,8 @@ chrome.commands.onCommand.addListener(async (command) => {
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
     const tabId = tabs[0]?.id;
     if (!tabId) return;
-    await toggleSelector(tabId);
+    const resolved = await resolveDeepScanOptions();
+    await toggleSelector(tabId, resolved);
   } catch {
   }
 });

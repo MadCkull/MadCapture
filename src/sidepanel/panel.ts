@@ -21,6 +21,8 @@ type AppState = {
   highlighted: Set<string>;
   filterSelected: boolean;
   filterSnapshot: Set<string>;
+  deepScan: boolean;
+  smartFilter: boolean;
 };
 
 const defaultNaming: NamingOptions = {
@@ -45,6 +47,8 @@ const state: AppState = {
   highlighted: new Set<string>(),
   filterSelected: false,
   filterSnapshot: new Set<string>(),
+  deepScan: false,
+  smartFilter: false,
 };
 
 let searchToken = 0;
@@ -69,10 +73,45 @@ converter.onmessage = (
   pendingConversions.get(ev.data.id)?.(ev.data);
   pendingConversions.delete(ev.data.id);
 };
+const previewRequests = new Set<string>();
+const previewLogged = new Set<string>();
+
+async function addLog(msg: string): Promise<void> {
+  try {
+    await chrome.runtime.sendMessage({ type: "ADD_LOG", msg });
+  } catch {
+    // ignore
+  }
+}
+
+function selectorExtractOptions() {
+  return state.deepScan
+    ? { deepScan: true, visibleOnly: false }
+    : { deepScan: false, visibleOnly: true };
+}
+
+function pageScanOptions() {
+  return state.deepScan
+    ? { deepScan: true, visibleOnly: false }
+    : { deepScan: false, visibleOnly: false };
+}
+
+async function syncExtractOptionsToTab(): Promise<void> {
+  try {
+    await chrome.runtime.sendMessage({
+      type: "SET_EXTRACT_OPTIONS_FOR_TAB",
+      options: selectorExtractOptions(),
+    });
+  } catch {
+    // ignore
+  }
+}
 
 function currentSelection(): ExtractedImage[] {
   const map = new Map(state.items.map((i) => [i.id, i]));
-  return state.selectionOrder.map((id) => map.get(id)).filter(Boolean) as ExtractedImage[];
+  return state.selectionOrder
+    .map((id) => map.get(id))
+    .filter(Boolean) as ExtractedImage[];
 }
 
 function beginSearch(label: string) {
@@ -110,7 +149,12 @@ function endSearch() {
 }
 
 async function loadSettings() {
-  const data = await chrome.storage.local.get(["naming", "format"]);
+  const data = await chrome.storage.local.get([
+    "naming",
+    "format",
+    "deepScan",
+    "smartFilter",
+  ]);
   if (data.naming) {
     if ("baseName" in data.naming) {
       state.naming = { ...defaultNaming, ...data.naming };
@@ -131,12 +175,17 @@ async function loadSettings() {
       state.naming.folderName = data.naming.folderName;
   }
   if (data.format) state.format = data.format;
+  if (typeof data.deepScan === "boolean") state.deepScan = data.deepScan;
+  if (typeof data.smartFilter === "boolean")
+    state.smartFilter = data.smartFilter;
 }
 
 async function saveSettings() {
   await chrome.storage.local.set({
     naming: state.naming,
     format: state.format,
+    deepScan: state.deepScan,
+    smartFilter: state.smartFilter,
   });
 }
 
@@ -176,6 +225,10 @@ function render(): void {
       </button>
       <button class="secondary icon-btn" id="toggleSelector" title="Toggle Selector (Alt+S)">
         <i class="fa-solid fa-crosshairs"></i>
+      </button>
+      <button class="stat-toggle toolbar-toggle ${state.deepScan ? "active" : ""}" id="toggleDeepScan" title="Deep Scan Mode">
+        <i class="fa-solid fa-bolt"></i>
+        Deep
       </button>
     </div>
     <div class="actions-right">
@@ -255,6 +308,11 @@ function render(): void {
       }
       const item = state.items.find((i) => i.id === id);
       if (item) {
+        const imgEl = card.querySelector("img") as HTMLImageElement | null;
+        const desiredSrc = item.previewUrl || item.url;
+        if (imgEl && imgEl.src !== desiredSrc) {
+          imgEl.src = desiredSrc;
+        }
         const dimSpan = card.querySelector(".dimensions");
         if (dimSpan)
           dimSpan.textContent =
@@ -264,7 +322,9 @@ function render(): void {
           sizeSpan.textContent = item.bytes
             ? `${(item.bytes / 1024).toFixed(1)} KB`
             : "...";
-        const indexBadge = card.querySelector(".selection-index") as HTMLElement | null;
+        const indexBadge = card.querySelector(
+          ".selection-index",
+        ) as HTMLElement | null;
         if (indexBadge) {
           const idx = orderMap.get(id);
           if (state.filterSelected && idx && state.selected.has(id)) {
@@ -290,6 +350,7 @@ function render(): void {
   } else if (isGrid) {
     syncGridState();
   }
+  if (isGrid) wirePreviewFallbacks();
 
   footer.innerHTML = `
     <div class="info-panel">
@@ -308,7 +369,7 @@ function render(): void {
   `;
 
   settings.innerHTML = state.settingsOpen
-    ? renderSettingsPanel(state.naming, state.format)
+    ? renderSettingsPanel(state.naming, state.format, state.smartFilter)
     : "";
   fab.innerHTML = `
     <button class="secondary icon-btn settings-fab" id="settingsToggle" title="Settings">
@@ -369,17 +430,23 @@ function wireStaticEvents(): void {
       if (ev.altKey && ev.code === "KeyS") {
         ev.preventDefault();
         ev.stopPropagation();
-        void chrome.runtime.sendMessage({ type: "TOGGLE_SELECTOR_FOR_TAB" });
+        void chrome.runtime.sendMessage({
+          type: "TOGGLE_SELECTOR_FOR_TAB",
+          options: selectorExtractOptions(),
+        });
       }
-    if (ev.key === "Escape" && !state.settingsOpen && !state.showLogs)
-      void chrome.runtime.sendMessage({ type: "TOGGLE_SELECTOR_FOR_TAB" });
-    if (ev.key === "Escape" && (state.settingsOpen || state.showLogs)) {
-      state.settingsOpen = false;
-      state.showLogs = false;
-      render();
-    }
-    if (ev.key === "Enter" && !state.searching && !state.processing)
-      void startDownload();
+      if (ev.key === "Escape" && !state.settingsOpen && !state.showLogs)
+        void chrome.runtime.sendMessage({
+          type: "TOGGLE_SELECTOR_FOR_TAB",
+          options: selectorExtractOptions(),
+        });
+      if (ev.key === "Escape" && (state.settingsOpen || state.showLogs)) {
+        state.settingsOpen = false;
+        state.showLogs = false;
+        render();
+      }
+      if (ev.key === "Enter" && !state.searching && !state.processing)
+        void startDownload();
     },
     true,
   );
@@ -429,10 +496,13 @@ function wireDynamicEvents(): void {
 
   document.querySelector("#scanPage")?.addEventListener("click", async () => {
     if (state.processing) return;
-    beginSearch("Searching for images...");
+    beginSearch(
+      state.deepScan ? "Deep scanning page..." : "Scanning whole page...",
+    );
     try {
       const result = await chrome.runtime.sendMessage({
         type: "SCAN_PAGE_IMAGES",
+        options: pageScanOptions(),
       });
       if (!result?.ok) {
         endSearch();
@@ -469,9 +539,29 @@ function wireDynamicEvents(): void {
   });
 
   document
+    .querySelector("#toggleDeepScan")
+    ?.addEventListener("click", async () => {
+      state.deepScan = !state.deepScan;
+      void saveSettings();
+      void syncExtractOptionsToTab();
+      render();
+    });
+
+  document
+    .querySelector("#toggleSmartFilter")
+    ?.addEventListener("click", () => {
+      state.smartFilter = !state.smartFilter;
+      void saveSettings();
+      render();
+    });
+
+  document
     .querySelector("#toggleSelector")
     ?.addEventListener("click", async () => {
-      await chrome.runtime.sendMessage({ type: "TOGGLE_SELECTOR_FOR_TAB" });
+      await chrome.runtime.sendMessage({
+        type: "TOGGLE_SELECTOR_FOR_TAB",
+        options: selectorExtractOptions(),
+      });
     });
 
   document.querySelector("#settingsToggle")?.addEventListener("click", (ev) => {
@@ -485,15 +575,17 @@ function wireDynamicEvents(): void {
     .querySelector("#downloadTask")
     ?.addEventListener("click", () => void startDownload());
 
-  document.querySelector("#toggleSelectedFilter")?.addEventListener("click", () => {
-    state.filterSelected = !state.filterSelected;
-    if (state.filterSelected) {
-      state.filterSnapshot = new Set(state.selectionOrder);
-    } else {
-      state.filterSnapshot.clear();
-    }
-    render();
-  });
+  document
+    .querySelector("#toggleSelectedFilter")
+    ?.addEventListener("click", () => {
+      state.filterSelected = !state.filterSelected;
+      if (state.filterSelected) {
+        state.filterSnapshot = new Set(state.selectionOrder);
+      } else {
+        state.filterSnapshot.clear();
+      }
+      render();
+    });
 
   const baseNameInput = document.querySelector(
     "#baseName",
@@ -542,7 +634,8 @@ function wireDynamicEvents(): void {
     });
   });
 
-  document.querySelector("#viewLogs")?.addEventListener("click", async () => {
+  document.querySelector("#viewLogs")?.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
     state.showLogs = true;
     state.settingsOpen = false;
     render();
@@ -573,6 +666,73 @@ function wireDynamicEvents(): void {
       const logList = document.querySelector("#log-list");
       if (logList) logList.innerHTML = "Logs cleared.";
     });
+}
+
+function guessMimeFromUrl(url: string): string {
+  const cleaned = url.split(/[?#]/)[0].toLowerCase();
+  if (cleaned.endsWith(".png")) return "image/png";
+  if (cleaned.endsWith(".webp")) return "image/webp";
+  if (cleaned.endsWith(".avif")) return "image/avif";
+  if (cleaned.endsWith(".jpg") || cleaned.endsWith(".jpeg"))
+    return "image/jpeg";
+  return "image/jpeg";
+}
+
+async function ensurePreview(item: ExtractedImage): Promise<void> {
+  if (item.previewUrl?.startsWith("blob:")) return;
+  if (previewRequests.has(item.id)) return;
+  if (item.url.startsWith("data:")) return;
+  previewRequests.add(item.id);
+  try {
+    await addLog(`Preview fallback: fetching bytes for ${item.url}`);
+    const fetched = await chrome.runtime.sendMessage({
+      type: "FETCH_BYTES",
+      url: item.url,
+    });
+    if (!fetched?.ok || !fetched.bytes) {
+      await addLog(
+        `Preview fallback failed for ${item.url}: ${fetched?.error || "no bytes"}`,
+      );
+      return;
+    }
+    const bytes = new Uint8Array(fetched.bytes);
+    const mime = guessMimeFromUrl(item.url);
+    const blob = new Blob([bytes], { type: mime });
+    const blobUrl = URL.createObjectURL(blob);
+    if (item.previewUrl?.startsWith("blob:")) {
+      URL.revokeObjectURL(item.previewUrl);
+    }
+    item.previewUrl = blobUrl;
+    await addLog(`Preview fallback ok for ${item.url} (bytes: ${bytes.length})`);
+    render();
+  } finally {
+    previewRequests.delete(item.id);
+  }
+}
+
+function wirePreviewFallbacks(): void {
+  const main = document.querySelector(".main-content");
+  if (!main) return;
+  main.querySelectorAll<HTMLImageElement>(".card img").forEach((img) => {
+    if (img.dataset.previewBound === "1") return;
+    img.dataset.previewBound = "1";
+    const handleError = () => {
+      const card = img.closest(".card") as HTMLElement | null;
+      const id = card?.dataset.id;
+      if (!id) return;
+      const item = state.items.find((i) => i.id === id);
+      if (!item) return;
+      if (!previewLogged.has(item.id)) {
+        previewLogged.add(item.id);
+        void addLog(`Preview error: ${item.url}`);
+      }
+      void ensurePreview(item);
+    };
+    img.addEventListener("error", handleError);
+    if (img.complete && img.naturalWidth === 0) {
+      handleError();
+    }
+  });
 }
 
 async function convertBytes(
@@ -764,13 +924,52 @@ async function processNewItemsBatch(items: ExtractedImage[]): Promise<void> {
     await hydrateItem(items[i], i, items.length);
   }
 
-  state.items.push(...items);
+  const filtered = state.smartFilter
+    ? applySmartFilter(items)
+    : { items, removed: 0 };
+  const deduped = await dedupeIncomingItems(filtered.items);
+  const kept = deduped.items;
+  const removedDupes = deduped.removed;
+  const removedJunk = filtered.removed;
+  if (!kept.length) {
+    state.processing = false;
+    state.progress = 0;
+    state.status =
+      removedDupes || removedJunk
+        ? buildRemovalSummary(removedDupes, removedJunk)
+        : "No new images found";
+    state.statusLevel = "info";
+    render();
+    setTimeout(() => {
+      if (
+        !state.searching &&
+        !state.processing &&
+        state.status ===
+          (removedDupes || removedJunk
+            ? buildRemovalSummary(removedDupes, removedJunk)
+            : "No new images found")
+      ) {
+        state.status = "Ready";
+        render();
+      }
+    }, 2000);
+    return;
+  }
+
+  state.items.push(...kept);
   state.items.sort(compareByPagePosition);
   // By default, do not pre-select newly added images.
 
   state.processing = false;
   state.progress = 0;
-  state.status = `Added ${items.length} images`;
+  if (removedDupes || removedJunk) {
+    state.status = `Added ${kept.length} images (${buildRemovalSummary(
+      removedDupes,
+      removedJunk,
+    ).toLowerCase()})`;
+  } else {
+    state.status = `Added ${kept.length} images`;
+  }
   state.statusLevel = "info";
   render();
   setTimeout(() => {
@@ -832,6 +1031,177 @@ function flashStatus(
       render();
     }
   }, timeoutMs);
+}
+
+function signatureForItem(item: ExtractedImage): string | null {
+  if (!item.width || !item.height || !item.bytes) return null;
+  return `${item.width}x${item.height}-${item.bytes}`;
+}
+
+const SMART_ICON_MAX = 256;
+const SMART_MIN_SIDE = 64;
+const SMART_MIN_AREA = 64 * 64;
+const SMART_TINY_BYTES = 2048;
+const SMART_MAX_SIDE_FOR_TINY_BYTES = 256;
+
+function isSmartJunk(item: ExtractedImage): boolean {
+  const w = item.width ?? 0;
+  const h = item.height ?? 0;
+  if (!w || !h) return true;
+  const minSide = Math.min(w, h);
+  const maxSide = Math.max(w, h);
+  const area = w * h;
+  const sizeBytes = item.bytes ?? item.estimatedBytes;
+  if (!sizeBytes || !Number.isFinite(sizeBytes) || sizeBytes <= 0) return true;
+
+  if (maxSide <= SMART_ICON_MAX) return true;
+  if (area < SMART_MIN_AREA) return true;
+  if (minSide < SMART_MIN_SIDE && maxSide < SMART_MIN_SIDE * 2) return true;
+  if (
+    item.bytes &&
+    item.bytes < SMART_TINY_BYTES &&
+    maxSide < SMART_MAX_SIDE_FOR_TINY_BYTES
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function applySmartFilter(items: ExtractedImage[]): {
+  items: ExtractedImage[];
+  removed: number;
+} {
+  const kept: ExtractedImage[] = [];
+  let removed = 0;
+  for (const item of items) {
+    if (isSmartJunk(item)) removed += 1;
+    else kept.push(item);
+  }
+  return { items: kept, removed };
+}
+
+function buildRemovalSummary(dupes: number, junk: number): string {
+  if (dupes && junk) return `Removed ${dupes} duplicates, ${junk} junk`;
+  if (dupes) return `Removed ${dupes} duplicates`;
+  if (junk) return `Filtered ${junk} junk`;
+  return "No new images found";
+}
+
+function bytesFromDataUrl(dataUrl: string): Uint8Array | null {
+  const comma = dataUrl.indexOf(",");
+  if (comma === -1) return null;
+  const meta = dataUrl.slice(0, comma);
+  const data = dataUrl.slice(comma + 1);
+  if (/;base64/i.test(meta)) {
+    try {
+      const bin = atob(data);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+      return bytes;
+    } catch {
+      return null;
+    }
+  }
+  try {
+    return new TextEncoder().encode(decodeURIComponent(data));
+  } catch {
+    return null;
+  }
+}
+
+async function hashBytes(bytes: Uint8Array): Promise<string | null> {
+  if (!crypto?.subtle) return null;
+  try {
+    const digest = await crypto.subtle.digest("SHA-1", bytes);
+    return Array.from(new Uint8Array(digest))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+  } catch {
+    return null;
+  }
+}
+
+async function ensureItemHash(item: ExtractedImage): Promise<string | null> {
+  if (item.hash) return item.hash;
+  let bytes: Uint8Array | null = null;
+  if (item.url.startsWith("data:")) {
+    bytes = bytesFromDataUrl(item.url);
+  }
+  if (!bytes) {
+    try {
+      const fetched = await chrome.runtime.sendMessage({
+        type: "FETCH_BYTES",
+        url: item.url,
+      });
+      if (fetched?.ok && fetched.bytes) {
+        bytes = new Uint8Array(fetched.bytes);
+      }
+    } catch {
+      bytes = null;
+    }
+  }
+  if (!bytes) return null;
+  const digest = await hashBytes(bytes);
+  if (digest) item.hash = digest;
+  return digest;
+}
+
+async function isDuplicateItem(
+  existing: ExtractedImage,
+  incoming: ExtractedImage,
+): Promise<boolean> {
+  const hashExisting = await ensureItemHash(existing);
+  const hashIncoming = await ensureItemHash(incoming);
+  if (hashExisting && hashIncoming) return hashExisting === hashIncoming;
+  return false;
+}
+
+async function dedupeIncomingItems(
+  items: ExtractedImage[],
+): Promise<{ items: ExtractedImage[]; removed: number }> {
+  const signatureMap = new Map<string, ExtractedImage[]>();
+  for (const item of state.items) {
+    const sig = signatureForItem(item);
+    if (!sig) continue;
+    if (!signatureMap.has(sig)) signatureMap.set(sig, []);
+    signatureMap.get(sig)!.push(item);
+  }
+
+  const kept: ExtractedImage[] = [];
+  let removed = 0;
+
+  for (const item of items) {
+    const sig = signatureForItem(item);
+    if (!sig) {
+      kept.push(item);
+      continue;
+    }
+
+    const existingList = signatureMap.get(sig);
+    if (!existingList) {
+      signatureMap.set(sig, [item]);
+      kept.push(item);
+      continue;
+    }
+
+    let duplicate = false;
+    for (const existing of existingList) {
+      if (await isDuplicateItem(existing, item)) {
+        duplicate = true;
+        break;
+      }
+    }
+
+    if (duplicate) {
+      removed += 1;
+      continue;
+    }
+
+    existingList.push(item);
+    kept.push(item);
+  }
+
+  return { items: kept, removed };
 }
 
 async function locateImageOnPage(item: ExtractedImage): Promise<void> {
@@ -961,4 +1331,7 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 });
 
-void loadSettings().then(() => render());
+void loadSettings().then(() => {
+  render();
+  void syncExtractOptionsToTab();
+});

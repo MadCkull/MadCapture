@@ -1,6 +1,10 @@
 import { DesiredFormat, NamingOptions } from '../../utils/types';
 
-export function renderSettingsPanel(options: NamingOptions, format: DesiredFormat): string {
+export function renderSettingsPanel(
+  options: NamingOptions,
+  format: DesiredFormat,
+  smartFilter: boolean,
+): string {
   return `
     <div class="settings-panel">
       <div class="input-row">
@@ -18,6 +22,15 @@ export function renderSettingsPanel(options: NamingOptions, format: DesiredForma
         <label for="folderName">Folder Name</label>
         <input type="text" id="folderName" value="${options.folderName ?? ''}" placeholder="Captures" />
       </div>
+      <div class="input-group toggle-row">
+        <div>
+          <label>Smart Filter</label>
+          <div class="field-hint">Hide icons and tiny junk automatically</div>
+        </div>
+        <button class="stat-toggle ${smartFilter ? 'active' : ''}" id="toggleSmartFilter">
+          ${smartFilter ? 'On' : 'Off'}
+        </button>
+      </div>
       <div class="input-group">
         <label>Export Format</label>
         <div class="format-badges" id="formatBadges">
@@ -26,6 +39,9 @@ export function renderSettingsPanel(options: NamingOptions, format: DesiredForma
           <div class="format-badge ${format === 'image/jpeg' ? 'active' : ''}" data-value="image/jpeg">JPEG</div>
           <div class="format-badge ${format === 'image/webp' ? 'active' : ''}" data-value="image/webp">WEBP</div>
         </div>
+      </div>
+      <div class="input-group">
+        <button class="secondary" id="viewLogs">View Logs</button>
       </div>
     </div>`;
 }
