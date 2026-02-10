@@ -8,7 +8,7 @@ function cleanUrl(raw: string): string {
 
 function parseImageSet(nodes: ValueParserNode[]): CssImageCandidate | null {
   const segments: string[] = [];
-  let current: valueParser.Node[] = [];
+  let current: ValueParserNode[] = [];
 
   for (const node of nodes) {
     if (node.type === 'div' && node.value === ',') {
@@ -28,7 +28,7 @@ function parseImageSet(nodes: ValueParserNode[]): CssImageCandidate | null {
 
     parsed.walk((node) => {
       if (node.type === 'function' && node.value.toLowerCase() === 'url') {
-        if (!url) url = cleanUrl(valueParser.stringify(node.nodes));
+        if (!url) url = cleanUrl(valueParser.stringify(node.nodes || []));
         return false;
       }
       if (node.type === 'string' && !url) {
@@ -69,7 +69,7 @@ export function extractCssImageCandidates(value: string): CssImageCandidate[] {
       return false;
     }
     if (fn === 'url') {
-      const raw = cleanUrl(valueParser.stringify(node.nodes));
+      const raw = cleanUrl(valueParser.stringify(node.nodes || []));
       if (raw) results.push({ url: raw });
       return false;
     }

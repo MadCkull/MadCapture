@@ -49,11 +49,8 @@ export class FacebookHandler extends BaseSiteHandler {
       
       // Fallback: any large image
       const images = dialog.querySelectorAll('img');
-      for (const img of images) {
-        if (img.naturalWidth > 200) {
-          return img.parentElement || img;
-        }
-      }
+      const largeImage = Array.from(images).find(img => img.naturalWidth > 200);
+      if (largeImage) return largeImage.parentElement || largeImage;
     }
     
     // For posts
@@ -71,15 +68,15 @@ export class FacebookHandler extends BaseSiteHandler {
     
     // 1. Direct img elements
     const imgElements = root.querySelectorAll('img');
-    for (const img of imgElements) {
+    Array.from(imgElements).forEach(img => {
       const src = img.currentSrc || img.src;
-      if (!src || src.startsWith('data:')) continue;
+      if (!src || src.startsWith('data:')) return;
       
       // Skip tiny images
-      if (img.width < 50 && img.height < 50) continue;
+      if (img.width < 50 && img.height < 50) return;
       
       // Skip emoji/reaction images
-      if (img.alt?.match(/^(like|love|haha|wow|sad|angry)$/i)) continue;
+      if (img.alt?.match(/^(like|love|haha|wow|sad|angry)$/i)) return;
       
       images.push(this.createImage(src, 'img', {
         width: img.naturalWidth,
@@ -93,12 +90,12 @@ export class FacebookHandler extends BaseSiteHandler {
           images.push(this.createImage(highRes, 'link-href'));
         }
       }
-    }
+    });
     
     // 2. Background images
     if (deep) {
       const allElements = root.querySelectorAll<HTMLElement>('*');
-      for (const el of allElements) {
+      Array.from(allElements).forEach(el => {
         const bg = getComputedStyle(el).backgroundImage;
         if (bg && bg !== 'none' && bg.includes('url(')) {
           const urls = this.extractCssUrls(bg);
@@ -108,12 +105,12 @@ export class FacebookHandler extends BaseSiteHandler {
             }
           }
         }
-      }
+      });
     }
     
     // 3. Data attributes
     const elementsWithData = root.querySelectorAll('[data-src], [data-ploi], [data-store]');
-    for (const el of elementsWithData) {
+    Array.from(elementsWithData).forEach(el => {
       const dataSrc = el.getAttribute('data-src');
       if (dataSrc && this.isFacebookCdnUrl(dataSrc)) {
         images.push(this.createImage(dataSrc, 'data-attr'));
@@ -139,7 +136,7 @@ export class FacebookHandler extends BaseSiteHandler {
           // Not JSON
         }
       }
-    }
+    });
     
     return this.deduplicateImages(images);
   }

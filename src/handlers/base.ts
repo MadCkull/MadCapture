@@ -30,7 +30,7 @@ export interface SiteHandler {
    * Extract images from a selected element/region
    * This is the primary extraction method for user-selected areas
    */
-  extractImages(root: Element, options?: ExtractOptions): ExtractedImage[];
+  extractImages(root: Element, options?: ExtractOptions): ExtractedImage[] | Promise<ExtractedImage[]>;
   
   /**
    * Extract all images from the page (for full page scan)
@@ -63,7 +63,7 @@ export abstract class BaseSiteHandler implements SiteHandler {
   abstract hostPatterns: RegExp[];
   priority = 0;
   
-  abstract extractImages(root: Element, options?: ExtractOptions): ExtractedImage[];
+  abstract extractImages(root: Element, options?: ExtractOptions): ExtractedImage[] | Promise<ExtractedImage[]>;
   
   /**
    * Utility: Create an ExtractedImage object

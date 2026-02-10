@@ -93,12 +93,12 @@ export class InstagramHandler extends BaseSiteHandler {
     
     // 1. Direct img elements
     const imgElements = root.querySelectorAll('img');
-    for (const img of imgElements) {
+    Array.from(imgElements).forEach(img => {
       const src = img.currentSrc || img.src;
-      if (!src || src.startsWith('data:')) continue;
+      if (!src || src.startsWith('data:')) return;
       
       // Skip tiny images (likely icons)
-      if (img.naturalWidth && img.naturalWidth < 50) continue;
+      if (img.naturalWidth && img.naturalWidth < 50) return;
       
       images.push(this.createImage(src, 'img', {
         width: img.naturalWidth,
@@ -114,19 +114,19 @@ export class InstagramHandler extends BaseSiteHandler {
           }
         }
       }
-    }
+    });
     
     // 2. Video poster images
     const videos = root.querySelectorAll('video');
-    for (const video of videos) {
+    Array.from(videos).forEach(video => {
       if (video.poster) {
         images.push(this.createImage(video.poster, 'video-poster'));
       }
-    }
+    });
     
     // 3. Background images
     const allElements = root.querySelectorAll<HTMLElement>('*');
-    for (const el of allElements) {
+    Array.from(allElements).forEach(el => {
       const bg = getComputedStyle(el).backgroundImage;
       if (bg && bg !== 'none' && bg.includes('url(')) {
         const urls = this.extractCssUrls(bg);
@@ -136,7 +136,7 @@ export class InstagramHandler extends BaseSiteHandler {
           }
         }
       }
-    }
+    });
     
     // 4. Deep scan: Parse Instagram's embedded JSON data
     if (deep) {
@@ -176,7 +176,7 @@ export class InstagramHandler extends BaseSiteHandler {
     // Extract from all script tags with JSON
     if (deep) {
       const scripts = document.querySelectorAll('script[type="application/json"]');
-      for (const script of scripts) {
+      Array.from(scripts).forEach(script => {
         try {
           const data = JSON.parse(script.textContent || '');
           const urls = this.extractJsonValues(data, this.imageKeys);
@@ -188,7 +188,7 @@ export class InstagramHandler extends BaseSiteHandler {
         } catch {
           // Ignore parse errors
         }
-      }
+      });
       
       // Also scan HTML for escaped CDN URLs
       const html = document.documentElement.innerHTML;
@@ -251,7 +251,7 @@ export class InstagramHandler extends BaseSiteHandler {
   private getSharedData(): unknown {
     // window._sharedData
     try {
-      return (window as Record<string, unknown>)._sharedData;
+      return (window as any)._sharedData;
     } catch {
       return null;
     }
@@ -260,7 +260,7 @@ export class InstagramHandler extends BaseSiteHandler {
   private getAdditionalData(): unknown {
     // window.__additionalDataLoaded
     try {
-      return (window as Record<string, unknown>).__additionalDataLoaded;
+      return (window as any).__additionalDataLoaded;
     } catch {
       return null;
     }
@@ -271,9 +271,9 @@ export class InstagramHandler extends BaseSiteHandler {
     
     // Find script tags within or near the root
     const scripts = root.querySelectorAll('script');
-    for (const script of scripts) {
+    Array.from(scripts).forEach(script => {
       const text = script.textContent || '';
-      if (!text.includes('cdninstagram') && !text.includes('fbcdn')) continue;
+      if (!text.includes('cdninstagram') && !text.includes('fbcdn')) return;
       
       try {
         // Try to find JSON objects in the script
@@ -296,7 +296,7 @@ export class InstagramHandler extends BaseSiteHandler {
       } catch {
         // Ignore errors
       }
-    }
+    });
     
     return images;
   }

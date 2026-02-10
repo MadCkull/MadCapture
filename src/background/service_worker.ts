@@ -82,6 +82,7 @@ async function toggleSelector(
     await chrome.scripting.executeScript({ target: { tabId }, files: ['content/selectorOverlay.js'] });
     injectedTabs.add(tabId);
   }
+  
   try {
     return await chrome.tabs.sendMessage(tabId, { type: 'TOGGLE_SELECTOR', options });
   } catch {

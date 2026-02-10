@@ -214,23 +214,23 @@ function findImageElements(elements: Element[]): Element[] {
     if (hasImages(el, true)) {
       // Find the actual image elements inside
       const imgs = el.querySelectorAll('img, picture, canvas, video[poster]');
-      for (const img of imgs) {
+      Array.from(imgs).forEach(img => {
         if (!seen.has(img)) {
           seen.add(img);
           result.push(img);
         }
-      }
+      });
       
       // Also check for elements with background images
       const bgElements = el.querySelectorAll<HTMLElement>('*');
-      for (const bgEl of bgElements) {
-        if (seen.has(bgEl)) continue;
+      Array.from(bgElements).forEach(bgEl => {
+        if (seen.has(bgEl)) return;
         const style = getComputedStyle(bgEl);
         if (style.backgroundImage && style.backgroundImage !== 'none' && style.backgroundImage.includes('url(')) {
           seen.add(bgEl);
           result.push(bgEl);
         }
-      }
+      });
     }
   }
   

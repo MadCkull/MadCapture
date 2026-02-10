@@ -50,7 +50,7 @@ if (!window.__madcapture_selector_booted__) {
     let node: Element | null = el;
     while (node && node.nodeType === Node.ELEMENT_NODE && parts.length < 8) {
       const id = node.id ? `#${CSS.escape(node.id)}` : '';
-      const cls = node.classList.length ? `.${[...node.classList].slice(0, 2).map((c) => CSS.escape(c)).join('.')}` : '';
+      const cls = node.classList.length ? `.${Array.from(node.classList).slice(0, 2).map((c) => CSS.escape(c)).join('.')}` : '';
       parts.unshift(`${node.tagName.toLowerCase()}${id || cls}`);
       node = node.parentElement;
     }
@@ -101,7 +101,7 @@ if (!window.__madcapture_selector_booted__) {
       ) {
         return node;
       }
-      const parent = node.parentElement;
+      const parent: Element | null = node.parentElement;
       if (!parent || parent === document.body || parent === document.documentElement) break;
       node = parent;
       depth += 1;
@@ -207,7 +207,7 @@ if (!window.__madcapture_selector_booted__) {
     // Use smart piercing to find best image element
     const result = pierceToImage(x, y, {
       excludeElements,
-      expandToContainer: true,
+      expandToContainer: false,
     });
     
     if (!result) {
@@ -221,6 +221,9 @@ if (!window.__madcapture_selector_booted__) {
       return null;
     }
     
+    // Skip logic that expands selection (like Google enhanceSelection)
+    // as it conflicts with precise user intent
+    /*
     // Let site handler enhance the result
     const handler = getActiveHandler();
     if (handler?.enhanceSelection) {
@@ -231,6 +234,7 @@ if (!window.__madcapture_selector_booted__) {
         // Ignore errors, use original result
       }
     }
+    */
     
     return result.element;
   }

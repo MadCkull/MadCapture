@@ -72,16 +72,16 @@ export class TwitterHandler extends BaseSiteHandler {
     
     // 1. Direct img elements
     const imgElements = root.querySelectorAll('img');
-    for (const img of imgElements) {
+    Array.from(imgElements).forEach(img => {
       const src = img.currentSrc || img.src;
-      if (!src) continue;
+      if (!src) return;
       
       // Only process Twitter CDN images
-      if (!this.isTwitterCdnUrl(src)) continue;
+      if (!this.isTwitterCdnUrl(src)) return;
       
       // Skip profile images in extraction unless they're the target
       if (src.includes('profile_images') && !root.matches('[data-testid="UserAvatar"]')) {
-        continue;
+        return;
       }
       
       images.push(this.createImage(src, 'img', {
@@ -94,12 +94,12 @@ export class TwitterHandler extends BaseSiteHandler {
       if (highRes && highRes !== src) {
         images.push(this.createImage(highRes, 'link-href'));
       }
-    }
+    });
     
     // 2. Background images (for cards, etc.)
     if (deep) {
       const allElements = root.querySelectorAll<HTMLElement>('*');
-      for (const el of allElements) {
+      Array.from(allElements).forEach(el => {
         const bg = getComputedStyle(el).backgroundImage;
         if (bg && bg !== 'none' && bg.includes('url(')) {
           const urls = this.extractCssUrls(bg);
@@ -114,16 +114,16 @@ export class TwitterHandler extends BaseSiteHandler {
             }
           }
         }
-      }
+      });
     }
     
     // 3. Video poster images
     const videos = root.querySelectorAll('video');
-    for (const video of videos) {
+    Array.from(videos).forEach(video => {
       if (video.poster && this.isTwitterCdnUrl(video.poster)) {
         images.push(this.createImage(video.poster, 'video-poster'));
       }
-    }
+    });
     
     return this.deduplicateImages(images);
   }

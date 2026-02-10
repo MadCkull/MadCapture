@@ -297,6 +297,13 @@ button.secondary:hover {
   color: var(--primary);
 }
 
+.icon-btn.active {
+  background: rgba(124, 77, 255, 0.18);
+  border-color: var(--primary);
+  color: white;
+  box-shadow: 0 0 10px var(--primary-glow);
+}
+
 .settings-fab {
   position: absolute;
   right: 12px;

@@ -23,6 +23,7 @@ type AppState = {
   filterSnapshot: Set<string>;
   deepScan: boolean;
   smartFilter: boolean;
+  selectorActive: boolean;
 };
 
 const defaultNaming: NamingOptions = {
@@ -49,6 +50,7 @@ const state: AppState = {
   filterSnapshot: new Set<string>(),
   deepScan: false,
   smartFilter: false,
+  selectorActive: false,
 };
 
 let searchToken = 0;
@@ -223,7 +225,7 @@ function render(): void {
       <button class="secondary icon-btn" id="scanPage" title="Scan Whole Page">
         <i class="fa-solid fa-expand"></i>
       </button>
-      <button class="secondary icon-btn" id="toggleSelector" title="Toggle Selector (Alt+S)">
+      <button class="secondary icon-btn ${state.selectorActive ? "active" : ""}" id="toggleSelector" title="Toggle Selector (Alt+S)">
         <i class="fa-solid fa-crosshairs"></i>
       </button>
       <button class="stat-toggle toolbar-toggle ${state.deepScan ? "active" : ""}" id="toggleDeepScan" title="Deep Scan Mode">
@@ -305,34 +307,35 @@ function render(): void {
         } else {
           card.classList.remove("filter-out");
         }
-      }
-      const item = state.items.find((i) => i.id === id);
-      if (item) {
-        const imgEl = card.querySelector("img") as HTMLImageElement | null;
-        const desiredSrc = item.previewUrl || item.url;
-        if (imgEl && imgEl.src !== desiredSrc) {
-          imgEl.src = desiredSrc;
-        }
-        const dimSpan = card.querySelector(".dimensions");
-        if (dimSpan)
-          dimSpan.textContent =
-            item.width && item.height ? `${item.width}×${item.height}` : "...";
-        const sizeSpan = card.querySelector(".size");
-        if (sizeSpan)
-          sizeSpan.textContent = item.bytes
-            ? `${(item.bytes / 1024).toFixed(1)} KB`
-            : "...";
-        const indexBadge = card.querySelector(
-          ".selection-index",
-        ) as HTMLElement | null;
-        if (indexBadge) {
-          const idx = orderMap.get(id);
-          if (state.filterSelected && idx && state.selected.has(id)) {
-            indexBadge.textContent = String(idx);
-            indexBadge.classList.add("show");
-          } else {
-            indexBadge.textContent = "";
-            indexBadge.classList.remove("show");
+
+        const item = state.items.find((i) => i.id === id);
+        if (item) {
+          const imgEl = card.querySelector("img") as HTMLImageElement | null;
+          const desiredSrc = item.previewUrl || item.url;
+          if (imgEl && imgEl.src !== desiredSrc) {
+            imgEl.src = desiredSrc;
+          }
+          const dimSpan = card.querySelector(".dimensions");
+          if (dimSpan)
+            dimSpan.textContent =
+              item.width && item.height ? `${item.width}×${item.height}` : "...";
+          const sizeSpan = card.querySelector(".size");
+          if (sizeSpan)
+            sizeSpan.textContent = item.bytes
+              ? `${(item.bytes / 1024).toFixed(1)} KB`
+              : "...";
+          const indexBadge = card.querySelector(
+            ".selection-index",
+          ) as HTMLElement | null;
+          if (indexBadge) {
+            const idx = orderMap.get(id);
+            if (state.filterSelected && idx && state.selected.has(id)) {
+              indexBadge.textContent = String(idx);
+              indexBadge.classList.add("show");
+            } else {
+              indexBadge.textContent = "";
+              indexBadge.classList.remove("show");
+            }
           }
         }
       }
@@ -342,10 +345,10 @@ function render(): void {
   if (
     !isGrid ||
     !wasGrid ||
-    main.dataset.itemCount !== state.items.length.toString()
+    (main as HTMLElement).dataset.itemCount !== state.items.length.toString()
   ) {
     main.innerHTML = mainHtml;
-    main.dataset.itemCount = isGrid ? state.items.length.toString() : "0";
+    (main as HTMLElement).dataset.itemCount = isGrid ? state.items.length.toString() : "0";
     if (isGrid) syncGridState();
   } else if (isGrid) {
     syncGridState();
@@ -385,7 +388,7 @@ function wireStaticEvents(): void {
   let clickTimer: number | undefined;
   let pendingClickId: string | null = null;
   main.addEventListener("click", (e) => {
-    if (e.detail > 1) return;
+    if ((e as MouseEvent).detail > 1) return;
     const card = (e.target as HTMLElement).closest(".card");
     if (!card) return;
     const id = (card as HTMLElement).dataset.id;
@@ -477,6 +480,20 @@ function wireStaticEvents(): void {
       render();
     }
   });
+
+  // Listen for selector state changes from content script interactions
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg.type === 'SELECTION_CANCELLED' || msg.type === 'SELECTION_LOCKED') {
+      if (state.selectorActive) {
+        state.selectorActive = false;
+        render();
+      }
+    }
+    // If we want to detect when it turns ON from hotkey, we'd need another message
+    // but typically hotkey toggle goes through background -> content, 
+    // we might miss the initial "ON" state update here unless we poll or background tells us.
+    // For now, button click handles ON, and messages handle OFF.
+  });
 }
 
 function wireDynamicEvents(): void {
@@ -558,10 +575,18 @@ function wireDynamicEvents(): void {
   document
     .querySelector("#toggleSelector")
     ?.addEventListener("click", async () => {
-      await chrome.runtime.sendMessage({
-        type: "TOGGLE_SELECTOR_FOR_TAB",
-        options: selectorExtractOptions(),
-      });
+      try {
+        const res = await chrome.runtime.sendMessage({
+          type: "TOGGLE_SELECTOR_FOR_TAB",
+          options: selectorExtractOptions(),
+        });
+        if (res && typeof res.active === 'boolean') {
+          state.selectorActive = res.active;
+          render();
+        }
+      } catch (e) {
+        console.error('Failed to toggle selector', e);
+      }
     });
 
   document.querySelector("#settingsToggle")?.addEventListener("click", (ev) => {
@@ -673,9 +698,15 @@ function guessMimeFromUrl(url: string): string {
   if (cleaned.endsWith(".png")) return "image/png";
   if (cleaned.endsWith(".webp")) return "image/webp";
   if (cleaned.endsWith(".avif")) return "image/avif";
-  if (cleaned.endsWith(".jpg") || cleaned.endsWith(".jpeg"))
-    return "image/jpeg";
-  return "image/jpeg";
+  if (cleaned.endsWith(".gif")) return "image/gif";
+  if (cleaned.endsWith(".jpg") || cleaned.endsWith(".jpeg")) return "image/jpeg";
+  
+  // Check for hints in the full URL (query params etc)
+  if (url.includes('format=png') || url.includes('fmt=png')) return "image/png";
+  if (url.includes('format=webp') || url.includes('fmt=webp') || url.includes('cf=webp')) return "image/webp";
+  if (url.includes('format=gif') || url.includes('fmt=gif')) return "image/gif";
+  
+  return "image/jpeg"; // Default fallback
 }
 
 async function ensurePreview(item: ExtractedImage): Promise<void> {
@@ -714,8 +745,8 @@ function wirePreviewFallbacks(): void {
   const main = document.querySelector(".main-content");
   if (!main) return;
   main.querySelectorAll<HTMLImageElement>(".card img").forEach((img) => {
-    if (img.dataset.previewBound === "1") return;
-    img.dataset.previewBound = "1";
+    if ((img as HTMLElement).dataset.previewBound === "1") return;
+    (img as HTMLElement).dataset.previewBound = "1";
     const handleError = () => {
       const card = img.closest(".card") as HTMLElement | null;
       const id = card?.dataset.id;
@@ -765,14 +796,23 @@ function resolveTargetExt(item: ExtractedImage): string {
         .slice(0, 5) || "img"
     );
   }
+  
+  // Try to get extension from URL
   const urlBase = item.url.split(/[?#]/)[0];
   const parts = urlBase.split(".");
-  let ext = parts.length > 1 ? parts.pop() || "img" : "img";
-  ext = ext
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "")
-    .slice(0, 5);
-  return ext || "img";
+  let ext = parts.length > 1 ? parts.pop() || "" : "";
+  
+  // Clean up extension
+  ext = ext.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 5);
+  
+  // If no valid extension found, try to guess from URL hints
+  if (!ext || ext.length < 3 || ext === "img") {
+    const mime = guessMimeFromUrl(item.url);
+    const guessedExt = extFromMime(mime);
+    if (guessedExt) return guessedExt;
+  }
+  
+  return ext || "jpg"; // Default to jpg if all else fails
 }
 
 async function startDownload(): Promise<void> {
@@ -1112,7 +1152,7 @@ function bytesFromDataUrl(dataUrl: string): Uint8Array | null {
 async function hashBytes(bytes: Uint8Array): Promise<string | null> {
   if (!crypto?.subtle) return null;
   try {
-    const digest = await crypto.subtle.digest("SHA-1", bytes);
+    const digest = await crypto.subtle.digest("SHA-1", bytes.buffer as ArrayBuffer);
     return Array.from(new Uint8Array(digest))
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");

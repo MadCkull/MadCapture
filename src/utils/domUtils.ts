@@ -214,11 +214,11 @@ export function hasImages(el: Element, deep = true): boolean {
     
     // Check for elements with background images
     const children = el.querySelectorAll<HTMLElement>('*');
-    for (const child of children) {
+    if (Array.from(children).some(child => {
       const style = getComputedStyle(child);
-      if (style.backgroundImage && style.backgroundImage !== 'none' && style.backgroundImage.includes('url(')) {
-        return true;
-      }
+      return style.backgroundImage && style.backgroundImage !== 'none' && style.backgroundImage.includes('url(');
+    })) {
+      return true;
     }
   }
   

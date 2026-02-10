@@ -637,7 +637,7 @@
       let density;
       parsed.walk((node) => {
         if (node.type === "function" && node.value.toLowerCase() === "url") {
-          if (!url) url = cleanUrl(import_postcss_value_parser.default.stringify(node.nodes));
+          if (!url) url = cleanUrl(import_postcss_value_parser.default.stringify(node.nodes || []));
           return false;
         }
         if (node.type === "string" && !url) {
@@ -674,7 +674,7 @@
         return false;
       }
       if (fn === "url") {
-        const raw = cleanUrl(import_postcss_value_parser.default.stringify(node.nodes));
+        const raw = cleanUrl(import_postcss_value_parser.default.stringify(node.nodes || []));
         if (raw) results.push({ url: raw });
         return false;
       }
@@ -907,10 +907,10 @@
       const images = [];
       const deep = options?.deepScan ?? false;
       const imgElements = root.querySelectorAll("img");
-      for (const img of imgElements) {
+      Array.from(imgElements).forEach((img) => {
         const src = img.currentSrc || img.src;
-        if (!src || src.startsWith("data:")) continue;
-        if (img.naturalWidth && img.naturalWidth < 50) continue;
+        if (!src || src.startsWith("data:")) return;
+        if (img.naturalWidth && img.naturalWidth < 50) return;
         images.push(this.createImage(src, "img", {
           width: img.naturalWidth,
           height: img.naturalHeight
@@ -923,15 +923,15 @@
             }
           }
         }
-      }
+      });
       const videos = root.querySelectorAll("video");
-      for (const video of videos) {
+      Array.from(videos).forEach((video) => {
         if (video.poster) {
           images.push(this.createImage(video.poster, "video-poster"));
         }
-      }
+      });
       const allElements = root.querySelectorAll("*");
-      for (const el of allElements) {
+      Array.from(allElements).forEach((el) => {
         const bg = getComputedStyle(el).backgroundImage;
         if (bg && bg !== "none" && bg.includes("url(")) {
           const urls = this.extractCssUrls(bg);
@@ -941,7 +941,7 @@
             }
           }
         }
-      }
+      });
       if (deep) {
         const jsonImages = this.extractFromJsonData(root);
         images.push(...jsonImages);
@@ -971,7 +971,7 @@
       }
       if (deep) {
         const scripts = document.querySelectorAll('script[type="application/json"]');
-        for (const script of scripts) {
+        Array.from(scripts).forEach((script) => {
           try {
             const data = JSON.parse(script.textContent || "");
             const urls = this.extractJsonValues(data, this.imageKeys);
@@ -982,7 +982,7 @@
             }
           } catch {
           }
-        }
+        });
         const html = document.documentElement.innerHTML;
         const cdnPattern = /"(https?:\\u002F\\u002F[^"]*(?:cdninstagram|fbcdn)[^"]*)"/g;
         let match;
@@ -1036,9 +1036,9 @@
     extractFromJsonData(root) {
       const images = [];
       const scripts = root.querySelectorAll("script");
-      for (const script of scripts) {
+      Array.from(scripts).forEach((script) => {
         const text = script.textContent || "";
-        if (!text.includes("cdninstagram") && !text.includes("fbcdn")) continue;
+        if (!text.includes("cdninstagram") && !text.includes("fbcdn")) return;
         try {
           const jsonMatch = text.match(/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g);
           if (jsonMatch) {
@@ -1057,7 +1057,7 @@
           }
         } catch {
         }
-      }
+      });
       return images;
     }
     parseSrcset(srcset) {
@@ -1140,10 +1140,10 @@
       const images = [];
       const deep = options?.deepScan ?? false;
       const imgElements = root.querySelectorAll("img");
-      for (const img of imgElements) {
+      Array.from(imgElements).forEach((img) => {
         const src = img.currentSrc || img.src;
-        if (!src) continue;
-        if (!this.isPinterestCdnUrl(src) && src.includes("pinterest")) continue;
+        if (!src) return;
+        if (!this.isPinterestCdnUrl(src) && src.includes("pinterest")) return;
         images.push(this.createImage(src, "img", {
           width: img.naturalWidth,
           height: img.naturalHeight
@@ -1166,9 +1166,9 @@
             }
           }
         }
-      }
+      });
       const allElements = root.querySelectorAll("*");
-      for (const el of allElements) {
+      Array.from(allElements).forEach((el) => {
         const bg = getComputedStyle(el).backgroundImage;
         if (bg && bg !== "none" && bg.includes("url(")) {
           const urls = this.extractCssUrls(bg);
@@ -1184,7 +1184,7 @@
             }
           }
         }
-      }
+      });
       if (deep) {
         const pwsImages = this.extractFromPwsData(root);
         images.push(...pwsImages);
@@ -1222,9 +1222,9 @@
       }
       if (deep) {
         const scripts = document.querySelectorAll('script[type="application/json"]');
-        for (const script of scripts) {
+        Array.from(scripts).forEach((script) => {
           const text = script.textContent || "";
-          if (!text.includes("pinimg")) continue;
+          if (!text.includes("pinimg")) return;
           try {
             const data = JSON.parse(text);
             const urls = this.extractPinterestUrls(data);
@@ -1237,7 +1237,7 @@
             }
           } catch {
           }
-        }
+        });
       }
       images.push(...this.extractImages(document.body, options));
       return this.deduplicateImages(images);
@@ -1291,7 +1291,7 @@
     extractFromPwsData(root) {
       const images = [];
       const elementsWithData = root.querySelectorAll('[data-pin-id], [data-test-id*="pin"]');
-      for (const el of elementsWithData) {
+      Array.from(elementsWithData).forEach((el) => {
         for (const attr of el.getAttributeNames()) {
           if (!attr.startsWith("data-")) continue;
           const value = el.getAttribute(attr);
@@ -1310,7 +1310,7 @@
             }
           }
         }
-      }
+      });
       return images;
     }
     extractPinterestUrls(data, seen = /* @__PURE__ */ new WeakSet()) {
@@ -1399,11 +1399,8 @@
         const imgContainer = dialog.querySelector('img[data-visualcompletion="media-vc-image"]');
         if (imgContainer) return imgContainer.parentElement || imgContainer;
         const images = dialog.querySelectorAll("img");
-        for (const img of images) {
-          if (img.naturalWidth > 200) {
-            return img.parentElement || img;
-          }
-        }
+        const largeImage = Array.from(images).find((img) => img.naturalWidth > 200);
+        if (largeImage) return largeImage.parentElement || largeImage;
       }
       const post = element.closest('[data-pagelet*="FeedUnit"], [role="article"]');
       if (post) {
@@ -1415,11 +1412,11 @@
       const images = [];
       const deep = options?.deepScan ?? false;
       const imgElements = root.querySelectorAll("img");
-      for (const img of imgElements) {
+      Array.from(imgElements).forEach((img) => {
         const src = img.currentSrc || img.src;
-        if (!src || src.startsWith("data:")) continue;
-        if (img.width < 50 && img.height < 50) continue;
-        if (img.alt?.match(/^(like|love|haha|wow|sad|angry)$/i)) continue;
+        if (!src || src.startsWith("data:")) return;
+        if (img.width < 50 && img.height < 50) return;
+        if (img.alt?.match(/^(like|love|haha|wow|sad|angry)$/i)) return;
         images.push(this.createImage(src, "img", {
           width: img.naturalWidth,
           height: img.naturalHeight
@@ -1430,10 +1427,10 @@
             images.push(this.createImage(highRes, "link-href"));
           }
         }
-      }
+      });
       if (deep) {
         const allElements = root.querySelectorAll("*");
-        for (const el of allElements) {
+        Array.from(allElements).forEach((el) => {
           const bg = getComputedStyle(el).backgroundImage;
           if (bg && bg !== "none" && bg.includes("url(")) {
             const urls = this.extractCssUrls(bg);
@@ -1443,10 +1440,10 @@
               }
             }
           }
-        }
+        });
       }
       const elementsWithData = root.querySelectorAll("[data-src], [data-ploi], [data-store]");
-      for (const el of elementsWithData) {
+      Array.from(elementsWithData).forEach((el) => {
         const dataSrc = el.getAttribute("data-src");
         if (dataSrc && this.isFacebookCdnUrl(dataSrc)) {
           images.push(this.createImage(dataSrc, "data-attr"));
@@ -1468,7 +1465,7 @@
           } catch {
           }
         }
-      }
+      });
       return this.deduplicateImages(images);
     }
     extractPageImages(options) {
@@ -1581,12 +1578,12 @@
       const images = [];
       const deep = options?.deepScan ?? false;
       const imgElements = root.querySelectorAll("img");
-      for (const img of imgElements) {
+      Array.from(imgElements).forEach((img) => {
         const src = img.currentSrc || img.src;
-        if (!src) continue;
-        if (!this.isTwitterCdnUrl(src)) continue;
+        if (!src) return;
+        if (!this.isTwitterCdnUrl(src)) return;
         if (src.includes("profile_images") && !root.matches('[data-testid="UserAvatar"]')) {
-          continue;
+          return;
         }
         images.push(this.createImage(src, "img", {
           width: img.naturalWidth,
@@ -1596,10 +1593,10 @@
         if (highRes && highRes !== src) {
           images.push(this.createImage(highRes, "link-href"));
         }
-      }
+      });
       if (deep) {
         const allElements = root.querySelectorAll("*");
-        for (const el of allElements) {
+        Array.from(allElements).forEach((el) => {
           const bg = getComputedStyle(el).backgroundImage;
           if (bg && bg !== "none" && bg.includes("url(")) {
             const urls = this.extractCssUrls(bg);
@@ -1613,14 +1610,14 @@
               }
             }
           }
-        }
+        });
       }
       const videos = root.querySelectorAll("video");
-      for (const video of videos) {
+      Array.from(videos).forEach((video) => {
         if (video.poster && this.isTwitterCdnUrl(video.poster)) {
           images.push(this.createImage(video.poster, "video-poster"));
         }
-      }
+      });
       return this.deduplicateImages(images);
     }
     extractPageImages(options) {
@@ -1744,9 +1741,9 @@
       const images = [];
       const deep = options?.deepScan ?? false;
       const imgElements = root.querySelectorAll("img");
-      for (const img of imgElements) {
+      Array.from(imgElements).forEach((img) => {
         const src = img.currentSrc || img.src;
-        if (!src || src.startsWith("data:")) continue;
+        if (!src || src.startsWith("data:")) return;
         if (this.isRedditCdnUrl(src)) {
           images.push(this.createImage(src, "img", {
             width: img.naturalWidth,
@@ -1765,18 +1762,18 @@
             height: img.naturalHeight
           }));
         }
-      }
+      });
       const videos = root.querySelectorAll("video");
-      for (const video of videos) {
+      Array.from(videos).forEach((video) => {
         if (video.poster) {
           images.push(this.createImage(video.poster, "video-poster"));
         }
-      }
+      });
       const galleryImages = this.extractGalleryImages(root);
       images.push(...galleryImages);
       if (deep) {
         const allElements = root.querySelectorAll("*");
-        for (const el of allElements) {
+        Array.from(allElements).forEach((el) => {
           const bg = getComputedStyle(el).backgroundImage;
           if (bg && bg !== "none" && bg.includes("url(")) {
             const urls = this.extractCssUrls(bg);
@@ -1786,7 +1783,7 @@
               }
             }
           }
-        }
+        });
       }
       return this.deduplicateImages(images);
     }
@@ -1861,7 +1858,7 @@
     extractGalleryImages(root) {
       const images = [];
       const galleries = root.querySelectorAll('[class*="gallery"], [data-gallery-id]');
-      for (const gallery of galleries) {
+      Array.from(galleries).forEach((gallery) => {
         const dataAttr = gallery.getAttribute("data-gallery-items");
         if (dataAttr) {
           try {
@@ -1875,13 +1872,13 @@
           }
         }
         const galleryImages = gallery.querySelectorAll("img");
-        for (const img of galleryImages) {
+        Array.from(galleryImages).forEach((img) => {
           const src = img.currentSrc || img.src;
           if (src && !src.startsWith("data:")) {
             images.push(this.createImage(src, "img"));
           }
-        }
-      }
+        });
+      });
       return images;
     }
     getGalleryData() {
@@ -1893,7 +1890,7 @@
       } catch {
       }
       const scripts = document.querySelectorAll("script");
-      for (const script of scripts) {
+      for (const script of Array.from(scripts)) {
         const text = script.textContent || "";
         if (!text.includes("galleryOrder") && !text.includes("gallery_data")) continue;
         try {
@@ -1920,13 +1917,131 @@
   };
   var redditHandler = new RedditHandler();
 
+  // src/handlers/google.ts
+  var GoogleHandler = class extends BaseSiteHandler {
+    name = "google";
+    hostPatterns = [/google\.(com|co\.\w+|[\w]+)$/i];
+    priority = 10;
+    // Selectors for Google Images
+    thumbnailSelector = "[data-id] img";
+    sidePanelSelector = "#Sva75c";
+    // Main side panel container
+    sidePanelCloseBtnSelector = '[jsaction*="close"]';
+    highResImageSelector = '#Sva75c img[src^="http"]:not([src*="gstatic.com"]):not([src^="data:"])';
+    isOverlayElement(element) {
+      return !!element.closest(this.sidePanelSelector);
+    }
+    enhanceSelection(element) {
+      const thumbnail = element.closest("[data-id]");
+      if (thumbnail) {
+        return thumbnail;
+      }
+      return element;
+    }
+    async extractImages(root, options) {
+      const images = [];
+      const thumbnails = root.querySelectorAll ? Array.from(root.querySelectorAll("[data-id]")) : [];
+      if (root.matches && root.matches("[data-id]")) thumbnails.push(root);
+      if (thumbnails.length === 0) {
+        const parentThumb = root.closest("[data-id]");
+        if (parentThumb) {
+          thumbnails.push(parentThumb);
+        }
+      }
+      if (thumbnails.length > 0) {
+        for (const thumb of thumbnails) {
+          const img = thumb.querySelector("img");
+          if (img && img.src) {
+            images.push(this.createImage(img.src, "img", {
+              width: img.naturalWidth,
+              height: img.naturalHeight,
+              filenameHint: "google-thumb.jpg"
+            }));
+          }
+        }
+        if (options?.deepScan && thumbnails.length === 1) {
+          const thumb = thumbnails[0];
+          try {
+            const highResUrl = await this.fetchHighResFromThumbnail(thumb);
+            if (highResUrl) {
+              images.push(this.createImage(highResUrl, "link-href", {
+                filenameHint: "google-highres.jpg",
+                width: 0,
+                // Unknown until loaded
+                height: 0
+              }));
+            }
+          } catch (e) {
+            console.warn("Failed to fetch high-res Google image", e);
+          }
+        }
+      }
+      const imgs = root.querySelectorAll ? Array.from(root.querySelectorAll("img")) : [];
+      if (root.tagName === "IMG") imgs.push(root);
+      for (const img of imgs) {
+        if (img.src) {
+          images.push(this.createImage(img.src, "img", {
+            width: img.naturalWidth,
+            height: img.naturalHeight
+          }));
+        }
+      }
+      return this.deduplicateImages(images);
+    }
+    /**
+     * Simulates a click on the thumbnail, waits for the side panel image to load, 
+     * grabs the URL, and closes the panel.
+     */
+    /**
+     * Simulates a click on the thumbnail, waits for the side panel image to load, 
+     * grabs the URL, and closes the panel.
+     */
+    async fetchHighResFromThumbnail(thumbnail) {
+      const thumbImg = thumbnail.querySelector("img");
+      const thumbAlt = thumbImg?.alt || "";
+      thumbnail.click();
+      const sidePanel = document.querySelector(this.sidePanelSelector);
+      if (!sidePanel) return null;
+      const maxWait = 3e3;
+      const start = Date.now();
+      let bestUrl = null;
+      while (Date.now() - start < maxWait) {
+        const candidates = Array.from(sidePanel.querySelectorAll('img[src^="http"]'));
+        for (const img of candidates) {
+          const src = img.src;
+          if (src.includes("gstatic.com") || src.includes("favicon")) continue;
+          if (img.naturalWidth > 0 && img.naturalWidth < 200) continue;
+          if (thumbAlt && img.alt && (img.alt.includes(thumbAlt) || thumbAlt.includes(img.alt))) {
+            bestUrl = src;
+            break;
+          }
+          if (!bestUrl || img.naturalWidth * img.naturalHeight > 1e5) {
+            bestUrl = src;
+          }
+        }
+        if (bestUrl) break;
+        await new Promise((r) => requestAnimationFrame(r));
+      }
+      const closeBtn = sidePanel.querySelector(this.sidePanelCloseBtnSelector);
+      if (closeBtn) {
+        try {
+          closeBtn.click();
+        } catch {
+        }
+      }
+      return bestUrl;
+    }
+  };
+  var googleHandler = new GoogleHandler();
+
   // src/handlers/registry.ts
   var handlers = [
     instagramHandler,
     pinterestHandler,
     facebookHandler,
     twitterHandler,
-    redditHandler
+    redditHandler,
+    googleHandler
   ].sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
   var cachedHandler = void 0;
   var cachedHostname = null;
@@ -1989,10 +2104,15 @@
     if (Number.isFinite(opacity) && opacity <= 0.01) return false;
     return true;
   }
-  function looksLikeImageUrl(url) {
+  function looksLikeImageUrl(url, originType) {
     if (url.startsWith("data:image/")) return true;
     if (url.startsWith("blob:")) return true;
-    return getAllowedExtFromUrl(url) !== null;
+    if (getAllowedExtFromUrl(url) !== null) return true;
+    if (ATTR_HINT_RE.test(url)) return true;
+    if (originType && originType !== "img" && originType !== "picture") {
+      return false;
+    }
+    return true;
   }
   function isUrlLike(url) {
     if (/^(https?:|data:image|blob:)/i.test(url)) return true;
@@ -2031,7 +2151,7 @@
     const file = pathname.split("/").pop() || "";
     if (!file.includes(".")) return null;
     const ext = file.split(".").pop();
-    return isAllowedExt(ext) ? normalizeExt(ext || "") : null;
+    return isAllowedExt(ext ?? null) ? normalizeExt(ext || "") : null;
   }
   function getAllowedExtFromUrl(rawUrl) {
     try {
@@ -2724,7 +2844,17 @@
           }
         } else {
           for (const root of roots) {
-            const handlerImages = handler.extractImages(root, opts);
+            if (typeof handler.extractImages !== "function") {
+              console.warn(`Handler ${handler.name || "unknown"} missing extractImages method`);
+              continue;
+            }
+            const result = handler.extractImages(root, opts);
+            let handlerImages = [];
+            if (result instanceof Promise) {
+              handlerImages = await result;
+            } else if (Array.isArray(result)) {
+              handlerImages = result;
+            }
             for (const img of handlerImages) {
               items.push({
                 ...img,
@@ -3098,7 +3228,13 @@
         return allowedOrigins.includes(item.originType);
       }
       if (url.endsWith(".svg") || url.includes("svg+xml")) return false;
-      return getAllowedExtFromUrl(item.url) !== null;
+      if (url.endsWith(".ico")) return false;
+      if (item.originType === "img" || item.originType === "picture") {
+        if (item.width && item.width > 50 || item.height && item.height > 50) {
+          return true;
+        }
+      }
+      return looksLikeImageUrl(item.url, item.originType);
     }).map((item) => {
       if (item.url.startsWith("data:")) {
         const mime = extractDataUrlMime(item.url);
@@ -3252,11 +3388,11 @@
     if (deep) {
       if (el.querySelector("img, picture, canvas, video[poster]")) return true;
       const children = el.querySelectorAll("*");
-      for (const child of children) {
+      if (Array.from(children).some((child) => {
         const style = getComputedStyle(child);
-        if (style.backgroundImage && style.backgroundImage !== "none" && style.backgroundImage.includes("url(")) {
-          return true;
-        }
+        return style.backgroundImage && style.backgroundImage !== "none" && style.backgroundImage.includes("url(");
+      })) {
+        return true;
       }
     }
     return false;
@@ -3404,21 +3540,21 @@
       }
       if (hasImages(el, true)) {
         const imgs = el.querySelectorAll("img, picture, canvas, video[poster]");
-        for (const img of imgs) {
+        Array.from(imgs).forEach((img) => {
           if (!seen.has(img)) {
             seen.add(img);
             result.push(img);
           }
-        }
+        });
         const bgElements = el.querySelectorAll("*");
-        for (const bgEl of bgElements) {
-          if (seen.has(bgEl)) continue;
+        Array.from(bgElements).forEach((bgEl) => {
+          if (seen.has(bgEl)) return;
           const style = getComputedStyle(bgEl);
           if (style.backgroundImage && style.backgroundImage !== "none" && style.backgroundImage.includes("url(")) {
             seen.add(bgEl);
             result.push(bgEl);
           }
-        }
+        });
       }
     }
     return result;
@@ -3558,7 +3694,7 @@
       let node = el;
       while (node && node.nodeType === Node.ELEMENT_NODE && parts.length < 8) {
         const id = node.id ? `#${CSS.escape(node.id)}` : "";
-        const cls = node.classList.length ? `.${[...node.classList].slice(0, 2).map((c) => CSS.escape(c)).join(".")}` : "";
+        const cls = node.classList.length ? `.${Array.from(node.classList).slice(0, 2).map((c) => CSS.escape(c)).join(".")}` : "";
         parts.unshift(`${node.tagName.toLowerCase()}${id || cls}`);
         node = node.parentElement;
       }
@@ -3663,7 +3799,7 @@
       if (state.overlay) excludeElements.push(state.overlay);
       const result = pierceToImage(x, y, {
         excludeElements,
-        expandToContainer: true
+        expandToContainer: false
       });
       if (!result) {
         const list = document.elementsFromPoint(x, y);
@@ -3673,14 +3809,6 @@
           return el;
         }
         return null;
-      }
-      const handler = getActiveHandler();
-      if (handler?.enhanceSelection) {
-        try {
-          const enhanced = handler.enhanceSelection(result.element);
-          return Array.isArray(enhanced) ? enhanced[0] : enhanced;
-        } catch {
-        }
       }
       return result.element;
     }, onMove = function(ev) {

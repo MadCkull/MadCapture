@@ -64,9 +64,9 @@ export class RedditHandler extends BaseSiteHandler {
     
     // 1. Direct img elements
     const imgElements = root.querySelectorAll('img');
-    for (const img of imgElements) {
+    Array.from(imgElements).forEach(img => {
       const src = img.currentSrc || img.src;
-      if (!src || src.startsWith('data:')) continue;
+      if (!src || src.startsWith('data:')) return;
       
       // Process Reddit CDN images
       if (this.isRedditCdnUrl(src)) {
@@ -91,15 +91,15 @@ export class RedditHandler extends BaseSiteHandler {
           height: img.naturalHeight,
         }));
       }
-    }
+    });
     
     // 2. Video poster images
     const videos = root.querySelectorAll('video');
-    for (const video of videos) {
+    Array.from(videos).forEach(video => {
       if (video.poster) {
         images.push(this.createImage(video.poster, 'video-poster'));
       }
-    }
+    });
     
     // 3. Gallery data (Reddit galleries)
     const galleryImages = this.extractGalleryImages(root);
@@ -108,7 +108,7 @@ export class RedditHandler extends BaseSiteHandler {
     // 4. Background images
     if (deep) {
       const allElements = root.querySelectorAll<HTMLElement>('*');
-      for (const el of allElements) {
+      Array.from(allElements).forEach(el => {
         const bg = getComputedStyle(el).backgroundImage;
         if (bg && bg !== 'none' && bg.includes('url(')) {
           const urls = this.extractCssUrls(bg);
@@ -118,7 +118,7 @@ export class RedditHandler extends BaseSiteHandler {
             }
           }
         }
-      }
+      });
     }
     
     return this.deduplicateImages(images);
@@ -226,7 +226,7 @@ export class RedditHandler extends BaseSiteHandler {
     // Look for gallery containers
     const galleries = root.querySelectorAll('[class*="gallery"], [data-gallery-id]');
     
-    for (const gallery of galleries) {
+    Array.from(galleries).forEach(gallery => {
       // Check for gallery data attributes
       const dataAttr = gallery.getAttribute('data-gallery-items');
       if (dataAttr) {
@@ -244,13 +244,13 @@ export class RedditHandler extends BaseSiteHandler {
       
       // Also get visible images in gallery
       const galleryImages = gallery.querySelectorAll('img');
-      for (const img of galleryImages) {
+      Array.from(galleryImages).forEach(img => {
         const src = img.currentSrc || img.src;
         if (src && !src.startsWith('data:')) {
           images.push(this.createImage(src, 'img'));
         }
-      }
-    }
+      });
+    });
     
     return images;
   }
@@ -258,7 +258,7 @@ export class RedditHandler extends BaseSiteHandler {
   private getGalleryData(): Array<{ url: string; width?: number; height?: number }> | null {
     // Reddit stores gallery data in window
     try {
-      const redditData = (window as Record<string, unknown>).__REDDIT_MEDIA__;
+      const redditData = (window as any).__REDDIT_MEDIA__;
       if (redditData) {
         return this.extractJsonValues(redditData, ['url', 's']) as unknown as Array<{ url: string; width?: number; height?: number }>;
       }
@@ -268,7 +268,7 @@ export class RedditHandler extends BaseSiteHandler {
     
     // Check for gallery JSON in scripts
     const scripts = document.querySelectorAll('script');
-    for (const script of scripts) {
+    for (const script of Array.from(scripts)) {
       const text = script.textContent || '';
       if (!text.includes('galleryOrder') && !text.includes('gallery_data')) continue;
       

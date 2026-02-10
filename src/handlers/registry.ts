@@ -11,6 +11,7 @@ import { pinterestHandler } from './pinterest';
 import { facebookHandler } from './facebook';
 import { twitterHandler } from './twitter';
 import { redditHandler } from './reddit';
+import { googleHandler } from './google';
 
 /**
  * All registered site handlers, sorted by priority
@@ -21,6 +22,7 @@ const handlers: SiteHandler[] = [
   facebookHandler,
   twitterHandler,
   redditHandler,
+  googleHandler,
 ].sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
 
 /**
@@ -100,6 +102,7 @@ export {
   facebookHandler,
   twitterHandler,
   redditHandler,
+  googleHandler,
 };
 
 // Re-export types

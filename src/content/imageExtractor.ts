@@ -60,10 +60,23 @@ function isVisibleInBounds(el: Element, bounds: ViewportBounds): boolean {
   return true;
 }
 
-function looksLikeImageUrl(url: string): boolean {
+function looksLikeImageUrl(url: string, originType?: OriginType): boolean {
   if (url.startsWith('data:image/')) return true;
   if (url.startsWith('blob:')) return true;
-  return getAllowedExtFromUrl(url) !== null;
+  
+  // Check for common image extensions
+  if (getAllowedExtFromUrl(url) !== null) return true;
+  
+  // Check for image-like patterns in path or query
+  if (ATTR_HINT_RE.test(url)) return true;
+  
+  // Strict check only for non-explicit image sources
+  if (originType && originType !== 'img' && originType !== 'picture') {
+    return false;
+  }
+  
+  // If it's an img tag, be permissive
+  return true;
 }
 
 function isUrlLike(url: string): boolean {
@@ -109,7 +122,7 @@ function allowedExtFromPathname(pathname: string): string | null {
   const file = pathname.split('/').pop() || '';
   if (!file.includes('.')) return null;
   const ext = file.split('.').pop();
-  return isAllowedExt(ext) ? normalizeExt(ext || '') : null;
+  return isAllowedExt(ext ?? null) ? normalizeExt(ext || '') : null;
 }
 
 function getAllowedExtFromUrl(rawUrl: string): string | null {
@@ -912,7 +925,23 @@ export async function extractImagesFromRoots(
       } else {
         // For selection-based extraction
         for (const root of roots) {
-          const handlerImages = handler.extractImages(root, opts);
+          // Check if method exists
+          if (typeof handler.extractImages !== 'function') {
+            console.warn(`Handler ${handler.name || 'unknown'} missing extractImages method`);
+            continue;
+          }
+          
+          // Execute extraction (potentially async)
+          const result = handler.extractImages(root, opts);
+          
+          // Handle promise or array
+          let handlerImages: ExtractedImage[] = [];
+          if (result instanceof Promise) {
+            handlerImages = await result;
+          } else if (Array.isArray(result)) {
+            handlerImages = result;
+          }
+          
           for (const img of handlerImages) {
             items.push({
               ...img,
@@ -1310,8 +1339,20 @@ export async function extractImagesFromRoots(
         ];
         return allowedOrigins.includes(item.originType);
       }
+      
+      // Explicitly block SVG/ICO unless they are the target
       if (url.endsWith('.svg') || url.includes('svg+xml')) return false;
-      return getAllowedExtFromUrl(item.url) !== null;
+      if (url.endsWith('.ico')) return false;
+      
+      // Trust direct image elements with dimensions
+      if (item.originType === 'img' || item.originType === 'picture') {
+        if ((item.width && item.width > 50) || (item.height && item.height > 50)) {
+          return true;
+        }
+      }
+      
+      // For others, require a valid extension or strong hint
+      return looksLikeImageUrl(item.url, item.originType);
     })
     .map((item) => {
       if (item.url.startsWith('data:')) {

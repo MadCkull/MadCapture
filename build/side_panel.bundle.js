@@ -115,7 +115,8 @@
     filterSelected: false,
     filterSnapshot: /* @__PURE__ */ new Set(),
     deepScan: false,
-    smartFilter: false
+    smartFilter: false,
+    selectorActive: false
   };
   var searchToken = 0;
   var searchTimeoutId;
@@ -247,7 +248,7 @@
       <button class="secondary icon-btn" id="scanPage" title="Scan Whole Page">
         <i class="fa-solid fa-expand"></i>
       </button>
-      <button class="secondary icon-btn" id="toggleSelector" title="Toggle Selector (Alt+S)">
+      <button class="secondary icon-btn ${state.selectorActive ? "active" : ""}" id="toggleSelector" title="Toggle Selector (Alt+S)">
         <i class="fa-solid fa-crosshairs"></i>
       </button>
       <button class="stat-toggle toolbar-toggle ${state.deepScan ? "active" : ""}" id="toggleDeepScan" title="Deep Scan Mode">
@@ -321,31 +322,31 @@
           } else {
             card.classList.remove("filter-out");
           }
-        }
-        const item = state.items.find((i) => i.id === id);
-        if (item) {
-          const imgEl = card.querySelector("img");
-          const desiredSrc = item.previewUrl || item.url;
-          if (imgEl && imgEl.src !== desiredSrc) {
-            imgEl.src = desiredSrc;
-          }
-          const dimSpan = card.querySelector(".dimensions");
-          if (dimSpan)
-            dimSpan.textContent = item.width && item.height ? `${item.width}\xD7${item.height}` : "...";
-          const sizeSpan = card.querySelector(".size");
-          if (sizeSpan)
-            sizeSpan.textContent = item.bytes ? `${(item.bytes / 1024).toFixed(1)} KB` : "...";
-          const indexBadge = card.querySelector(
-            ".selection-index"
-          );
-          if (indexBadge) {
-            const idx = orderMap.get(id);
-            if (state.filterSelected && idx && state.selected.has(id)) {
-              indexBadge.textContent = String(idx);
-              indexBadge.classList.add("show");
-            } else {
-              indexBadge.textContent = "";
-              indexBadge.classList.remove("show");
+          const item = state.items.find((i) => i.id === id);
+          if (item) {
+            const imgEl = card.querySelector("img");
+            const desiredSrc = item.previewUrl || item.url;
+            if (imgEl && imgEl.src !== desiredSrc) {
+              imgEl.src = desiredSrc;
+            }
+            const dimSpan = card.querySelector(".dimensions");
+            if (dimSpan)
+              dimSpan.textContent = item.width && item.height ? `${item.width}\xD7${item.height}` : "...";
+            const sizeSpan = card.querySelector(".size");
+            if (sizeSpan)
+              sizeSpan.textContent = item.bytes ? `${(item.bytes / 1024).toFixed(1)} KB` : "...";
+            const indexBadge = card.querySelector(
+              ".selection-index"
+            );
+            if (indexBadge) {
+              const idx = orderMap.get(id);
+              if (state.filterSelected && idx && state.selected.has(id)) {
+                indexBadge.textContent = String(idx);
+                indexBadge.classList.add("show");
+              } else {
+                indexBadge.textContent = "";
+                indexBadge.classList.remove("show");
+              }
             }
           }
         }
@@ -465,6 +466,14 @@
         render();
       }
     });
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (msg.type === "SELECTION_CANCELLED" || msg.type === "SELECTION_LOCKED") {
+        if (state.selectorActive) {
+          state.selectorActive = false;
+          render();
+        }
+      }
+    });
   }
   function wireDynamicEvents() {
     document.querySelector("#clearAll")?.addEventListener("click", () => {
@@ -527,10 +536,18 @@
       render();
     });
     document.querySelector("#toggleSelector")?.addEventListener("click", async () => {
-      await chrome.runtime.sendMessage({
-        type: "TOGGLE_SELECTOR_FOR_TAB",
-        options: selectorExtractOptions()
-      });
+      try {
+        const res = await chrome.runtime.sendMessage({
+          type: "TOGGLE_SELECTOR_FOR_TAB",
+          options: selectorExtractOptions()
+        });
+        if (res && typeof res.active === "boolean") {
+          state.selectorActive = res.active;
+          render();
+        }
+      } catch (e) {
+        console.error("Failed to toggle selector", e);
+      }
     });
     document.querySelector("#settingsToggle")?.addEventListener("click", (ev) => {
       ev.stopPropagation();
@@ -618,8 +635,11 @@
     if (cleaned.endsWith(".png")) return "image/png";
     if (cleaned.endsWith(".webp")) return "image/webp";
     if (cleaned.endsWith(".avif")) return "image/avif";
-    if (cleaned.endsWith(".jpg") || cleaned.endsWith(".jpeg"))
-      return "image/jpeg";
+    if (cleaned.endsWith(".gif")) return "image/gif";
+    if (cleaned.endsWith(".jpg") || cleaned.endsWith(".jpeg")) return "image/jpeg";
+    if (url.includes("format=png") || url.includes("fmt=png")) return "image/png";
+    if (url.includes("format=webp") || url.includes("fmt=webp") || url.includes("cf=webp")) return "image/webp";
+    if (url.includes("format=gif") || url.includes("fmt=gif")) return "image/gif";
     return "image/jpeg";
   }
   async function ensurePreview(item) {
@@ -696,9 +716,14 @@
     }
     const urlBase = item.url.split(/[?#]/)[0];
     const parts = urlBase.split(".");
-    let ext = parts.length > 1 ? parts.pop() || "img" : "img";
+    let ext = parts.length > 1 ? parts.pop() || "" : "";
     ext = ext.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 5);
-    return ext || "img";
+    if (!ext || ext.length < 3 || ext === "img") {
+      const mime = guessMimeFromUrl(item.url);
+      const guessedExt = extFromMime(mime);
+      if (guessedExt) return guessedExt;
+    }
+    return ext || "jpg";
   }
   async function startDownload() {
     if (state.processing || state.searching) return;
@@ -962,7 +987,7 @@
   async function hashBytes(bytes) {
     if (!crypto?.subtle) return null;
     try {
-      const digest = await crypto.subtle.digest("SHA-1", bytes);
+      const digest = await crypto.subtle.digest("SHA-1", bytes.buffer);
       return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
     } catch {
       return null;

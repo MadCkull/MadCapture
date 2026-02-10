@@ -81,12 +81,12 @@ export class PinterestHandler extends BaseSiteHandler {
     
     // 1. Direct img elements
     const imgElements = root.querySelectorAll('img');
-    for (const img of imgElements) {
+    Array.from(imgElements).forEach(img => {
       const src = img.currentSrc || img.src;
-      if (!src) continue;
+      if (!src) return;
       
       // Skip non-Pinterest CDN images (likely UI elements)
-      if (!this.isPinterestCdnUrl(src) && src.includes('pinterest')) continue;
+      if (!this.isPinterestCdnUrl(src) && src.includes('pinterest')) return;
       
       images.push(this.createImage(src, 'img', {
         width: img.naturalWidth,
@@ -115,11 +115,11 @@ export class PinterestHandler extends BaseSiteHandler {
           }
         }
       }
-    }
+    });
     
     // 2. Background images
     const allElements = root.querySelectorAll<HTMLElement>('*');
-    for (const el of allElements) {
+    Array.from(allElements).forEach(el => {
       const bg = getComputedStyle(el).backgroundImage;
       if (bg && bg !== 'none' && bg.includes('url(')) {
         const urls = this.extractCssUrls(bg);
@@ -136,7 +136,7 @@ export class PinterestHandler extends BaseSiteHandler {
           }
         }
       }
-    }
+    });
     
     // 3. Deep scan: Parse Pinterest's __PWS_DATA__
     if (deep) {
@@ -186,9 +186,9 @@ export class PinterestHandler extends BaseSiteHandler {
     // Scan all JSON script tags
     if (deep) {
       const scripts = document.querySelectorAll('script[type="application/json"]');
-      for (const script of scripts) {
+      Array.from(scripts).forEach(script => {
         const text = script.textContent || '';
-        if (!text.includes('pinimg')) continue;
+        if (!text.includes('pinimg')) return;
         
         try {
           const data = JSON.parse(text);
@@ -204,7 +204,7 @@ export class PinterestHandler extends BaseSiteHandler {
         } catch {
           // Ignore parse errors
         }
-      }
+      });
     }
     
     // Also run regular extraction on body
@@ -272,7 +272,7 @@ export class PinterestHandler extends BaseSiteHandler {
     
     // Also try window.__PRELOADED_STATE__
     try {
-      return (window as Record<string, unknown>).__PRELOADED_STATE__;
+      return (window as any).__PRELOADED_STATE__;
     } catch {
       return null;
     }
@@ -283,7 +283,7 @@ export class PinterestHandler extends BaseSiteHandler {
     
     // Find data attributes that might contain pin data
     const elementsWithData = root.querySelectorAll('[data-pin-id], [data-test-id*="pin"]');
-    for (const el of elementsWithData) {
+    Array.from(elementsWithData).forEach(el => {
       // Check for various data attributes
       for (const attr of el.getAttributeNames()) {
         if (!attr.startsWith('data-')) continue;
@@ -308,7 +308,7 @@ export class PinterestHandler extends BaseSiteHandler {
           }
         }
       }
-    }
+    });
     
     return images;
   }
