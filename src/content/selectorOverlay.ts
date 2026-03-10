@@ -90,15 +90,39 @@ if (!window.__madcapture_selector_booted__) {
     return !!el.querySelector(IMAGE_HINT_SELECTOR);
   }
 
+  /** Returns true if the element is itself a direct image (no need to expand). */
+  function isDirectImageElement(el: Element): boolean {
+    if (el instanceof HTMLImageElement) return true;
+    if (el instanceof HTMLCanvasElement) return true;
+    if (el instanceof HTMLVideoElement && el.poster) return true;
+    if (el instanceof HTMLPictureElement) return true;
+    if (el instanceof HTMLInputElement && el.type.toLowerCase() === 'image') return true;
+    return false;
+  }
+
   function findCaptureRoot(el: Element): Element {
+    // CRITICAL: If the element IS a direct image, don't expand at all.
+    // The user clicked on an <img> — they want THAT image, nothing else.
+    if (isDirectImageElement(el)) return el;
+
     let node: Element | null = el;
     let depth = 0;
+    const origArea = el.getBoundingClientRect().width * el.getBoundingClientRect().height;
+    const origHasImages = hasImageHints(el);
     while (node && depth < 6) {
       if (
         node !== document.body &&
         node !== document.documentElement &&
         hasImageHints(node)
       ) {
+        // Area-ratio guard: stop expanding if parent is >2× the original
+        // element's area AND the original already had image hints.
+        if (depth > 0 && origHasImages && origArea > 0) {
+          const nodeArea = node.getBoundingClientRect().width * node.getBoundingClientRect().height;
+          if (nodeArea > origArea * 2) {
+            return el;
+          }
+        }
         return node;
       }
       const parent: Element | null = node.parentElement;
@@ -115,7 +139,6 @@ if (!window.__madcapture_selector_booted__) {
     const handler = getActiveHandler();
     
     for (const el of elements) {
-      // Let site handler enhance selection first
       let enhanced: Element | Element[] = el;
       if (handler?.enhanceSelection) {
         try {
@@ -125,7 +148,6 @@ if (!window.__madcapture_selector_booted__) {
         }
       }
       
-      // Handle both single element and array results
       const toProcess = Array.isArray(enhanced) ? enhanced : [enhanced];
       
       for (const item of toProcess) {
@@ -136,7 +158,27 @@ if (!window.__madcapture_selector_booted__) {
         }
       }
     }
-    return roots;
+
+    // AGGRESSIVE containment: compare each root to its original element.
+    // If a root is >2× the original element's area, reject it and use
+    // the original directly. This prevents bleeding into neighboring blocks.
+    const validated: Element[] = [];
+    for (let i = 0; i < roots.length; i++) {
+      const root = roots[i];
+      const orig = elements[Math.min(i, elements.length - 1)];
+      const origRect = orig.getBoundingClientRect();
+      const rootRect = root.getBoundingClientRect();
+      const origArea = origRect.width * origRect.height;
+      const rootArea = rootRect.width * rootRect.height;
+      
+      if (origArea > 0 && rootArea > origArea * 2) {
+        validated.push(orig);
+      } else {
+        validated.push(root);
+      }
+    }
+
+    return validated.length > 0 ? validated : elements;
   }
 
   function ensureOverlay(): void {
@@ -166,12 +208,21 @@ if (!window.__madcapture_selector_booted__) {
 
     const tooltip = document.createElement('div');
     tooltip.style.position = 'fixed';
-    tooltip.style.background = '#111';
-    tooltip.style.color = '#fff';
-    tooltip.style.padding = '4px 6px';
-    tooltip.style.font = '12px sans-serif';
+    tooltip.style.background = 'rgba(17, 17, 23, 0.85)';
+    tooltip.style.backdropFilter = 'blur(8px)';
+    (tooltip.style as unknown as Record<string, string>)['webkitBackdropFilter'] = 'blur(8px)';
+    tooltip.style.color = '#e0e0e0';
+    tooltip.style.padding = '4px 8px';
+    tooltip.style.font = '11px/1.4 "Segoe UI", system-ui, sans-serif';
+    tooltip.style.borderRadius = '6px';
+    tooltip.style.border = '1px solid rgba(124, 77, 255, 0.3)';
+    tooltip.style.boxShadow = '0 2px 8px rgba(0,0,0,0.35)';
     tooltip.style.opacity = '0';
     tooltip.style.pointerEvents = 'none';
+    tooltip.style.whiteSpace = 'nowrap';
+    tooltip.style.display = 'flex';
+    tooltip.style.alignItems = 'center';
+    tooltip.style.gap = '6px';
 
     shadow.append(box, tooltip);
     document.documentElement.append(host);
@@ -188,8 +239,30 @@ if (!window.__madcapture_selector_booted__) {
     state.box.style.width = `${rect.width}px`;
     state.box.style.height = `${rect.height}px`;
     state.box.style.opacity = '1';
-    state.tooltip.textContent = `${Math.round(rect.width)}x${Math.round(rect.height)}`;
-    state.tooltip.style.transform = `translate(${rect.left}px, ${Math.max(0, rect.top - 22)}px)`;
+
+    // Build rich tooltip: <TAG> badge + WxH dimensions
+    const tagName = el.tagName.toLowerCase();
+    state.tooltip.innerHTML = '';
+
+    const tagBadge = document.createElement('span');
+    tagBadge.textContent = `<${tagName}>`;
+    tagBadge.style.color = '#b388ff';
+    tagBadge.style.fontWeight = '600';
+    tagBadge.style.fontSize = '10.5px';
+    tagBadge.style.letterSpacing = '0.3px';
+
+    const dimSpan = document.createElement('span');
+    dimSpan.textContent = `${Math.round(rect.width)} × ${Math.round(rect.height)}`;
+    dimSpan.style.color = '#80cbc4';
+    dimSpan.style.fontWeight = '500';
+    dimSpan.style.fontSize = '10.5px';
+
+    state.tooltip.append(tagBadge, dimSpan);
+
+    // Position tooltip above the box — offset for the taller tooltip
+    const tooltipH = 26;
+    const topPos = Math.max(0, rect.top - tooltipH - 4);
+    state.tooltip.style.transform = `translate(${rect.left}px, ${topPos}px)`;
     state.tooltip.style.opacity = '1';
   }
 
@@ -261,7 +334,40 @@ if (!window.__madcapture_selector_booted__) {
     try {
       const options = state.extractOptions ?? normalizeExtractOptions();
       const roots = expandSelectionRoots(state.locked);
-      const images = await extractImagesFromRoots(roots, options);
+
+      // Compute the bounding box of the user's locked selection in page coords
+      // and pass it as selectionBounds so the extractor can spatially filter.
+      let selBounds: { x: number; y: number; width: number; height: number } | undefined;
+      if (state.locked.length > 0) {
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const el of state.locked) {
+          const r = el.getBoundingClientRect();
+          if (!r.width && !r.height) continue;
+          const px = r.left + window.scrollX;
+          const py = r.top + window.scrollY;
+          minX = Math.min(minX, px);
+          minY = Math.min(minY, py);
+          maxX = Math.max(maxX, px + r.width);
+          maxY = Math.max(maxY, py + r.height);
+        }
+        if (Number.isFinite(minX)) {
+          // Tight padding — just 2% to handle sub-pixel rounding,
+          // NOT 10% which caused bleeding into neighbouring elements.
+          const padX = (maxX - minX) * 0.02;
+          const padY = (maxY - minY) * 0.02;
+          selBounds = {
+            x: minX - padX,
+            y: minY - padY,
+            width: (maxX - minX) + padX * 2,
+            height: (maxY - minY) + padY * 2,
+          };
+        }
+      }
+
+      const images = await extractImagesFromRoots(roots, {
+        ...options,
+        selectionBounds: selBounds,
+      });
       chrome.runtime.sendMessage({ type: 'SELECTION_LOCKED', payload, images });
     } catch (error) {
       chrome.runtime.sendMessage({

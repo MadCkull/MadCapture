@@ -712,9 +712,10 @@
   }
 
   // src/utils/url.ts
-  function canonicalizeUrl(input, base = location.href) {
+  function canonicalizeUrl(input, base) {
+    const resolvedBase = base ?? (typeof document !== "undefined" ? document.baseURI : location.href);
     try {
-      const u = new URL(input, base);
+      const u = new URL(input, resolvedBase);
       u.hash = "";
       return u.toString();
     } catch {
@@ -2076,9 +2077,457 @@
   var RELATIVE_IMG_RE = /(^|[\s"'(])((?:\.{0,2}\/)?[^\s"'()<>]+?\.(?:avif|webp|png|jpe?g)(?:\?[^\s"'()<>]*)?)/gi;
   var URL_FUNC_RE = /url\((['"]?)(.*?)\1\)/gi;
   var LINK_QUERY_KEYS = ["url", "imgurl", "image", "media", "photo", "src", "u", "uri", "href"];
-  var SIZE_QUERY_KEYS = ["w", "width", "h", "height", "size", "s", "sz"];
-  var QUALITY_QUERY_KEYS = ["q", "quality"];
-  var DPR_QUERY_KEYS = ["dpr"];
+  var REMOVE_PARAM_KEYS = /* @__PURE__ */ new Set([
+    // Size / resize
+    "w",
+    "width",
+    "h",
+    "height",
+    "size",
+    "s",
+    "sz",
+    "maxwidth",
+    "maxheight",
+    "resize",
+    "iw",
+    "ih",
+    "cw",
+    "ch",
+    "sw",
+    "sh",
+    // Format
+    "fm",
+    "format",
+    "f",
+    "ext",
+    "type",
+    "output",
+    "encoding",
+    "imageformat",
+    // Quality
+    "q",
+    "quality",
+    "ql",
+    // Crop / fit
+    "fit",
+    "crop",
+    "gravity",
+    "g",
+    "ar",
+    "aspect",
+    // DPR / scale
+    "dpr",
+    "scale",
+    "pixel_ratio",
+    // CDN processing flags
+    "auto",
+    "blur",
+    "sharp",
+    "sharpen",
+    "strip",
+    "trim",
+    "bg",
+    "brightness",
+    "contrast",
+    "saturation",
+    "hue",
+    // Imgix / Cloudinary specific
+    "fl",
+    "flags",
+    "e",
+    "effect"
+  ]);
+  var PRESERVE_PARAM_KEYS = /* @__PURE__ */ new Set([
+    "token",
+    "signature",
+    "sig",
+    "hash",
+    "key",
+    "apikey",
+    "api_key",
+    "id",
+    "file",
+    "path",
+    "name",
+    "v",
+    "version",
+    "cb",
+    "nonce",
+    "expires",
+    "hmac",
+    "policy",
+    "credential"
+  ]);
+  function cleanImageUrl(rawUrl) {
+    let url;
+    try {
+      url = new URL(rawUrl, document.baseURI);
+    } catch {
+      return null;
+    }
+    let changed = false;
+    const keysToRemove = [];
+    url.searchParams.forEach((_val, key) => {
+      const k = key.toLowerCase();
+      if (REMOVE_PARAM_KEYS.has(k) && !PRESERVE_PARAM_KEYS.has(k)) {
+        keysToRemove.push(key);
+      }
+    });
+    for (const key of keysToRemove) {
+      url.searchParams.delete(key);
+      changed = true;
+    }
+    let pathname = url.pathname;
+    const dimSegmentRe = /\/\d{2,4}x\d{2,4}(?=\/)/g;
+    const cleanedPath1 = pathname.replace(dimSegmentRe, "");
+    if (cleanedPath1 !== pathname && cleanedPath1.includes(".")) {
+      pathname = cleanedPath1;
+      changed = true;
+    }
+    const cloudinaryRe = /\/(?:w_\d+|h_\d+|c_\w+|q_\w+|f_\w+|dpr_[\d.]+|fl_\w+)[,/][^/]*/g;
+    const cleanedPath2 = pathname.replace(cloudinaryRe, "");
+    if (cleanedPath2 !== pathname && cleanedPath2.includes(".")) {
+      pathname = cleanedPath2;
+      changed = true;
+    }
+    if (pathname.includes("/_next/image") || pathname.includes("/image?")) {
+      const actualUrl = url.searchParams.get("url");
+      if (actualUrl) {
+        try {
+          const resolved = new URL(actualUrl, url.origin);
+          return resolved.toString();
+        } catch {
+        }
+      }
+    }
+    pathname = pathname.replace(/\/\/+/g, "/");
+    if (pathname !== url.pathname) {
+      url.pathname = pathname;
+      changed = true;
+    }
+    if (!changed) return null;
+    if (url.search === "?") url.search = "";
+    return url.toString();
+  }
+  function extractOgImages() {
+    const urls = [];
+    const selectors = [
+      'meta[property="og:image"]',
+      'meta[property="og:image:secure_url"]',
+      'meta[name="twitter:image"]',
+      'meta[name="twitter:image:src"]',
+      'link[rel="image_src"]'
+    ];
+    for (const sel of selectors) {
+      const el = document.querySelector(sel);
+      if (!el) continue;
+      const content = el.getAttribute("content") || el.getAttribute("href");
+      if (content) {
+        try {
+          const resolved = new URL(content, document.baseURI).href;
+          urls.push(resolved);
+        } catch {
+        }
+      }
+    }
+    return [...new Set(urls)];
+  }
+  function deriveOriginalUrl(rawUrl) {
+    let url;
+    try {
+      url = new URL(rawUrl, document.baseURI);
+    } catch {
+      return null;
+    }
+    if (/pinimg\.com$/i.test(url.hostname)) {
+      const parts = url.pathname.split("/").filter(Boolean);
+      if (parts.length > 1 && parts[0] !== "originals") {
+        parts[0] = "originals";
+        url.pathname = `/${parts.join("/")}`;
+        return url.toString();
+      }
+    }
+    if (/\/upload\//i.test(rawUrl) && /\/upload\/[^/]*(w_|h_|c_|q_|f_)/i.test(rawUrl)) {
+      const cleaned = rawUrl.replace(
+        /(\/upload\/)[^/]+\/(?=[^/]+\.[a-z]{3,5}(?:$|[?#]))/i,
+        "$1"
+      );
+      if (cleaned !== rawUrl && looksLikeImageUrl(cleaned)) return cleaned;
+    }
+    const stripped = rawUrl.replace(/=w\d+-h\d+[^&?#]*/i, "").replace(/=s\d+[^&?#]*/i, "").replace(/=w\d+[^&?#]*/i, "").replace(/=h\d+[^&?#]*/i, "");
+    if (stripped !== rawUrl && looksLikeImageUrl(stripped)) return stripped;
+    return null;
+  }
+  var IMAGE_CDN_HINTS = [
+    "cdn",
+    "img",
+    "image",
+    "images",
+    "media",
+    "static",
+    "assets",
+    "photos",
+    "cloudinary",
+    "imgix",
+    "cloudfront",
+    "amazonaws",
+    "akamai",
+    "fastly",
+    "twimg",
+    "fbcdn",
+    "pinimg",
+    "pbs.twimg",
+    "googleusercontent",
+    "ggpht",
+    "shopify",
+    "squarespace",
+    "wp.com",
+    "imgur",
+    "flickr",
+    "unsplash"
+  ];
+  function looksLikeImageCdn(url) {
+    try {
+      const hostname = new URL(url, location.href).hostname.toLowerCase();
+      return IMAGE_CDN_HINTS.some((h) => hostname.includes(h));
+    } catch {
+      return false;
+    }
+  }
+  function computeSelectionBounds(roots) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const root of roots) {
+      const r = root.getBoundingClientRect();
+      if (!r.width && !r.height) continue;
+      const px = r.left + window.scrollX;
+      const py = r.top + window.scrollY;
+      minX = Math.min(minX, px);
+      minY = Math.min(minY, py);
+      maxX = Math.max(maxX, px + r.width);
+      maxY = Math.max(maxY, py + r.height);
+    }
+    if (!Number.isFinite(minX)) return void 0;
+    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+  }
+  function getElementPageRect(el) {
+    const r = el.getBoundingClientRect();
+    return {
+      x: r.left + window.scrollX,
+      y: r.top + window.scrollY,
+      width: r.width,
+      height: r.height
+    };
+  }
+  function getOverlapRatio(outer, inner) {
+    const ix1 = inner.x, iy1 = inner.y;
+    const ix2 = inner.x + inner.width, iy2 = inner.y + inner.height;
+    const ox1 = outer.x, oy1 = outer.y;
+    const ox2 = outer.x + outer.width, oy2 = outer.y + outer.height;
+    const overlapX = Math.max(0, Math.min(ix2, ox2) - Math.max(ix1, ox1));
+    const overlapY = Math.max(0, Math.min(iy2, oy2) - Math.max(iy1, oy1));
+    const innerArea = inner.width * inner.height;
+    if (innerArea <= 0) return 0;
+    return overlapX * overlapY / innerArea;
+  }
+  function gridSearchImages(bounds, excludeElements) {
+    const vpLeft = bounds.x - window.scrollX;
+    const vpTop = bounds.y - window.scrollY;
+    const vpW = bounds.width;
+    const vpH = bounds.height;
+    const stepsX = Math.min(20, Math.max(4, Math.ceil(vpW / 30)));
+    const stepsY = Math.min(20, Math.max(4, Math.ceil(vpH / 30)));
+    const stepW = vpW / stepsX;
+    const stepH = vpH / stepsY;
+    const excludeSet = new Set(excludeElements);
+    const seen = /* @__PURE__ */ new Set();
+    const results = [];
+    for (let gx = 0; gx <= stepsX; gx++) {
+      for (let gy = 0; gy <= stepsY; gy++) {
+        const cx = vpLeft + gx * stepW;
+        const cy = vpTop + gy * stepH;
+        if (cx < 0 || cy < 0 || cx >= window.innerWidth || cy >= window.innerHeight) continue;
+        const stack = document.elementsFromPoint(cx, cy);
+        for (const el of stack) {
+          if (seen.has(el)) continue;
+          seen.add(el);
+          if (excludeSet.has(el)) continue;
+          if (isImageBearingElement(el)) {
+            results.push(el);
+          }
+        }
+      }
+    }
+    return results;
+  }
+  function isImageBearingElement(el) {
+    if (el instanceof HTMLImageElement) return true;
+    if (el instanceof HTMLCanvasElement) return true;
+    if (el instanceof HTMLVideoElement && el.poster) return true;
+    if (el instanceof HTMLInputElement && el.type.toLowerCase() === "image") return true;
+    if (el instanceof HTMLPictureElement) return true;
+    if (el.tagName === "SOURCE") return true;
+    if (el instanceof HTMLElement) {
+      const bg = getComputedStyle(el).backgroundImage;
+      if (bg && bg !== "none" && bg.includes("url(")) return true;
+    }
+    for (const attr of ["data-src", "data-lazy-src", "data-original", "data-srcset"]) {
+      if (el.hasAttribute(attr)) return true;
+    }
+    return false;
+  }
+  function computeSemanticScore(item, selBounds) {
+    let score = 0;
+    if (selBounds && item.pageX !== void 0 && item.pageY !== void 0) {
+      const w = item.width || 100;
+      const h = item.height || 100;
+      const imgRect = { x: item.pageX, y: item.pageY, width: w, height: h };
+      const overlap = getOverlapRatio(selBounds, imgRect);
+      score += Math.round(overlap * 30);
+    } else {
+      score += 10;
+    }
+    const SEMANTIC_SCORES = {
+      "img": 50,
+      "picture": 48,
+      "srcset": 45,
+      "canvas": 44,
+      "video-poster": 42,
+      "css-background": 35,
+      "image-set": 34,
+      "css-content": 30,
+      "css-mask": 25,
+      "lazy-attr": 28,
+      "data-attr": 15,
+      "link-href": 10
+    };
+    score += SEMANTIC_SCORES[item.originType] ?? 10;
+    if (item.originType === "img" || item.originType === "picture" || item.originType === "canvas") {
+      score += 20;
+    } else if (item.originType === "css-background" || item.originType === "srcset") {
+      score += 15;
+    } else if (item.originType === "lazy-attr" || item.originType === "video-poster") {
+      score += 12;
+    } else {
+      score += 5;
+    }
+    return score;
+  }
+  var STATE_GLOBALS = [
+    "__NEXT_DATA__",
+    "__INITIAL_STATE__",
+    "__PRELOADED_STATE__",
+    "__APP_DATA__",
+    "__NUXT__",
+    "__APOLLO_STATE__",
+    "__RELAY_STORE__"
+  ];
+  function extractFromPageStates() {
+    const urls = [];
+    const imgUrlRe = /https?:\/\/[^\s"'<>]+\.(?:jpg|jpeg|png|webp|avif|gif)(?:\?[^\s"'<>]*)?/gi;
+    for (const key of STATE_GLOBALS) {
+      try {
+        const state = window[key];
+        if (!state || typeof state !== "object") continue;
+        const json = JSON.stringify(state);
+        const matches = json.match(imgUrlRe);
+        if (matches) {
+          for (const m of matches) {
+            urls.push(m.replace(/\\\/|\\u002F/gi, "/"));
+          }
+        }
+      } catch {
+      }
+    }
+    const ldScripts = document.querySelectorAll('script[type="application/ld+json"]');
+    for (const script of Array.from(ldScripts)) {
+      try {
+        const text = script.textContent;
+        if (!text) continue;
+        const matches = text.match(imgUrlRe);
+        if (matches) urls.push(...matches);
+      } catch {
+      }
+    }
+    return [...new Set(urls)];
+  }
+  function observeDynamicImages(roots, durationMs = 400) {
+    return new Promise((resolve) => {
+      const found = [];
+      const seen = /* @__PURE__ */ new Set();
+      const observer = new MutationObserver((mutations) => {
+        for (const mut of mutations) {
+          for (const node of Array.from(mut.addedNodes)) {
+            if (!(node instanceof Element)) continue;
+            if (!seen.has(node) && isImageBearingElement(node)) {
+              seen.add(node);
+              found.push(node);
+            }
+            const descendants = node.querySelectorAll?.("img, canvas, video, picture, [data-src]") ?? [];
+            for (const desc of Array.from(descendants)) {
+              if (!seen.has(desc) && isImageBearingElement(desc)) {
+                seen.add(desc);
+                found.push(desc);
+              }
+            }
+          }
+          if (mut.type === "attributes" && mut.target instanceof Element) {
+            const el = mut.target;
+            if (!seen.has(el) && isImageBearingElement(el)) {
+              seen.add(el);
+              found.push(el);
+            }
+          }
+        }
+      });
+      for (const root of roots) {
+        observer.observe(root, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ["src", "srcset", "data-src", "data-lazy-src", "data-original", "style"]
+        });
+      }
+      setTimeout(() => {
+        observer.disconnect();
+        resolve(found);
+      }, durationMs);
+    });
+  }
+  async function forceLazyLoad(roots) {
+    const lazyImgs = [];
+    for (const root of roots) {
+      const imgs = root.querySelectorAll("img");
+      for (const img of Array.from(imgs)) {
+        const dataSrc = img.getAttribute("data-src") || img.getAttribute("data-lazy-src") || img.getAttribute("data-original");
+        if (!dataSrc) continue;
+        const currentSrc = img.getAttribute("src") || "";
+        const isPlaceholder = !currentSrc || currentSrc.includes("data:") || currentSrc.includes("placeholder") || currentSrc.includes("blank") || currentSrc.includes("spacer") || currentSrc.includes("1x1");
+        if (isPlaceholder) {
+          lazyImgs.push(img);
+        }
+      }
+    }
+    if (lazyImgs.length === 0) return;
+    for (const img of lazyImgs) {
+      try {
+        img.scrollIntoView({ block: "nearest", behavior: "instant" });
+      } catch {
+      }
+    }
+    await new Promise((r) => setTimeout(r, 300));
+    for (const img of lazyImgs) {
+      const dataSrc = img.getAttribute("data-src") || img.getAttribute("data-lazy-src") || img.getAttribute("data-original");
+      const currentSrc = img.getAttribute("src") || "";
+      if (dataSrc && (currentSrc.includes("data:") || currentSrc.includes("placeholder") || !currentSrc)) {
+        img.src = dataSrc;
+      }
+      const dataSrcset = img.getAttribute("data-srcset");
+      if (dataSrcset && !img.srcset) {
+        img.srcset = dataSrcset;
+      }
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
   function idFor(url, idx) {
     return `${idx}-${url.slice(0, 80)}`;
   }
@@ -2108,11 +2557,17 @@
     if (url.startsWith("data:image/")) return true;
     if (url.startsWith("blob:")) return true;
     if (getAllowedExtFromUrl(url) !== null) return true;
-    if (ATTR_HINT_RE.test(url)) return true;
-    if (originType && originType !== "img" && originType !== "picture") {
+    if (originType === "img" || originType === "picture") {
+      if (looksLikeImageCdn(url)) return true;
+      try {
+        const pathname = new URL(url, location.href).pathname;
+        const segments = pathname.split("/").filter(Boolean);
+        if (segments.length >= 2) return true;
+      } catch {
+      }
       return false;
     }
-    return true;
+    return false;
   }
   function isUrlLike(url) {
     if (/^(https?:|data:image|blob:)/i.test(url)) return true;
@@ -2355,51 +2810,6 @@
     }
     return results;
   }
-  function deriveOriginalUrl(rawUrl) {
-    let url;
-    try {
-      url = new URL(rawUrl, location.href);
-    } catch {
-      return null;
-    }
-    if (/pinimg\.com$/i.test(url.hostname)) {
-      const parts = url.pathname.split("/").filter(Boolean);
-      if (parts.length > 1 && parts[0] !== "originals") {
-        parts[0] = "originals";
-        url.pathname = `/${parts.join("/")}`;
-        return url.toString();
-      }
-    }
-    let changed = false;
-    SIZE_QUERY_KEYS.forEach((key) => {
-      if (!url.searchParams.has(key)) return;
-      const current = Number(url.searchParams.get(key));
-      const next = Number.isFinite(current) ? Math.max(current, 2048) : 2048;
-      url.searchParams.set(key, String(next));
-      changed = true;
-    });
-    QUALITY_QUERY_KEYS.forEach((key) => {
-      if (!url.searchParams.has(key)) return;
-      url.searchParams.set(key, "95");
-      changed = true;
-    });
-    DPR_QUERY_KEYS.forEach((key) => {
-      if (!url.searchParams.has(key)) return;
-      url.searchParams.set(key, "2");
-      changed = true;
-    });
-    if (changed) return url.toString();
-    const stripped = rawUrl.replace(/=w\d+-h\d+[^&?#]*/i, "").replace(/=s\d+[^&?#]*/i, "").replace(/=w\d+[^&?#]*/i, "").replace(/=h\d+[^&?#]*/i, "");
-    if (stripped !== rawUrl && looksLikeImageUrl(stripped)) return stripped;
-    if (/\/upload\//i.test(rawUrl) && /\/upload\/[^/]*(w_|h_|c_|q_|f_)/i.test(rawUrl)) {
-      const cleaned = rawUrl.replace(
-        /(\/upload\/)[^/]+\/(?=[^/]+\.[a-z]{3,5}(?:$|[?#]))/i,
-        "$1"
-      );
-      if (cleaned !== rawUrl && looksLikeImageUrl(cleaned)) return cleaned;
-    }
-    return null;
-  }
   function collectDocumentLinkedImages() {
     const urls = /* @__PURE__ */ new Set();
     const metaSelectors = [
@@ -2538,16 +2948,11 @@
     }
     return best;
   }
-  function pickSrcsetCandidate(candidates, displayWidth) {
+  function pickSrcsetCandidate(candidates, _displayWidth) {
     if (!candidates.length) return void 0;
-    if (!displayWidth || !Number.isFinite(displayWidth)) {
-      return candidates.sort((a, b) => (b.width ?? b.density ?? 0) - (a.width ?? a.density ?? 0))[0];
-    }
-    const target = displayWidth * (window.devicePixelRatio || 1);
     const withWidth = candidates.filter((c) => Number.isFinite(c.width));
     if (withWidth.length) {
-      const above = withWidth.filter((c) => c.width >= target).sort((a, b) => a.width - b.width)[0];
-      return above ?? withWidth.sort((a, b) => b.width - a.width)[0];
+      return withWidth.sort((a, b) => b.width - a.width)[0];
     }
     const withDensity = candidates.filter((c) => Number.isFinite(c.density)).sort((a, b) => b.density - a.density);
     return withDensity[0] ?? candidates[0];
@@ -2812,14 +3217,21 @@
       visibleOnly: options.visibleOnly ?? false,
       viewportPadding: options.viewportPadding ?? Math.min(500, Math.round(window.innerHeight * 0.25)),
       includeDataUrls: options.includeDataUrls ?? true,
-      includeBlobUrls: options.includeBlobUrls ?? true
+      includeBlobUrls: options.includeBlobUrls ?? true,
+      selectionBounds: options.selectionBounds ?? void 0
     };
+    const isGlobalScan = roots.some(
+      (root) => root === document.body || root === document.documentElement
+    );
+    let selBounds = opts.selectionBounds;
+    if (!selBounds && !isGlobalScan) {
+      selBounds = computeSelectionBounds(roots);
+    }
+    const overlapThreshold = opts.deepScan ? 0.2 : 0.5;
     const bounds = opts.visibleOnly ? getViewportBounds(opts.viewportPadding) : null;
     const items = [];
     let idx = 0;
-    const includeGlobal = roots.some(
-      (root) => root === document.body || root === document.documentElement
-    );
+    const includeGlobal = isGlobalScan;
     const handler = getActiveHandler();
     if (handler) {
       try {
@@ -2848,12 +3260,12 @@
               console.warn(`Handler ${handler.name || "unknown"} missing extractImages method`);
               continue;
             }
-            const result = handler.extractImages(root, opts);
+            const result2 = handler.extractImages(root, opts);
             let handlerImages = [];
-            if (result instanceof Promise) {
-              handlerImages = await result;
-            } else if (Array.isArray(result)) {
-              handlerImages = result;
+            if (result2 instanceof Promise) {
+              handlerImages = await result2;
+            } else if (Array.isArray(result2)) {
+              handlerImages = result2;
             }
             for (const img of handlerImages) {
               items.push({
@@ -2878,7 +3290,19 @@
         console.warn("Site handler extraction failed, falling back to generic:", error);
       }
     }
-    if (opts.deepScan && includeGlobal) {
+    if (includeGlobal) {
+      const ogUrls = extractOgImages();
+      for (const raw of ogUrls) {
+        const url = canonicalizeUrl(raw);
+        items.push({
+          id: idFor(url, idx++),
+          url,
+          originType: "link-href",
+          filenameHint: filenameFromUrl(url)
+        });
+      }
+    }
+    if (opts.deepScan && includeGlobal && !selBounds) {
       const linked = collectDocumentLinkedImages();
       linked.forEach((raw) => {
         const url = canonicalizeUrl(raw);
@@ -2960,11 +3384,22 @@
         }
       });
     }
+    if (opts.deepScan && !isGlobalScan) {
+      await forceLazyLoad(roots);
+      void observeDynamicImages(roots, 400).then((dynamicEls) => {
+      });
+    }
     for (const root of roots) {
       const elements = collectElements(root, opts.deepScan);
       for (const el of elements) {
         try {
           if (bounds && !isVisibleInBounds(el, bounds)) continue;
+          if (selBounds) {
+            const elPageRect = getElementPageRect(el);
+            if (elPageRect.width <= 0 || elPageRect.height <= 0) continue;
+            const overlap = getOverlapRatio(selBounds, elPageRect);
+            if (overlap < overlapThreshold) continue;
+          }
           const rect = el.getBoundingClientRect();
           const pos = posForRect(rect);
           if (el instanceof HTMLImageElement) {
@@ -2978,12 +3413,16 @@
               const url = canonicalizeUrl(cand.url);
               if (seen.has(url)) continue;
               seen.add(url);
+              const htmlW = el.getAttribute("width") ? parseInt(el.getAttribute("width"), 10) : 0;
+              const htmlH = el.getAttribute("height") ? parseInt(el.getAttribute("height"), 10) : 0;
+              const bestW = Math.max(htmlW, cand.quality || 0, el.naturalWidth || 0) || void 0;
+              const bestH = Math.max(htmlH, el.naturalHeight || 0) || void 0;
               items.push({
                 id: idFor(url, idx++),
                 url,
                 originType: cand.originType,
-                width: el.naturalWidth || void 0,
-                height: el.naturalHeight || void 0,
+                width: bestW,
+                height: bestH,
                 filenameHint: filenameFromUrl(url),
                 srcsetCandidates: cand.srcsetCandidates,
                 lazyHint: cand.lazyHint,
@@ -3043,6 +3482,31 @@
               pageX: pos.pageX,
               pageY: pos.pageY
             });
+          }
+          if (opts.deepScan && el instanceof HTMLVideoElement && !el.paused && el.readyState >= 2) {
+            try {
+              const vCanvas = document.createElement("canvas");
+              vCanvas.width = el.videoWidth;
+              vCanvas.height = el.videoHeight;
+              const vCtx = vCanvas.getContext("2d");
+              if (vCtx) {
+                vCtx.drawImage(el, 0, 0);
+                const frameUrl = vCanvas.toDataURL("image/jpeg", 0.92);
+                items.push({
+                  id: idFor(frameUrl, idx++),
+                  url: frameUrl,
+                  originType: "canvas",
+                  isCanvas: true,
+                  isDataUrl: true,
+                  width: el.videoWidth,
+                  height: el.videoHeight,
+                  filenameHint: "video-frame.jpg",
+                  pageX: pos.pageX,
+                  pageY: pos.pageY
+                });
+              }
+            } catch {
+            }
           }
           if (el instanceof HTMLInputElement && el.type.toLowerCase() === "image" && el.src) {
             const url = canonicalizeUrl(el.src);
@@ -3204,7 +3668,155 @@
         }
       }
     }
-    return items.filter((item) => {
+    if (selBounds && !isGlobalScan) {
+      const excludeEls = [];
+      const gridElements = gridSearchImages(selBounds, excludeEls);
+      const existingUrls = new Set(items.map((i) => i.url));
+      for (const el of gridElements) {
+        try {
+          const elPageRect = getElementPageRect(el);
+          if (elPageRect.width <= 0 || elPageRect.height <= 0) continue;
+          const overlap = getOverlapRatio(selBounds, elPageRect);
+          if (overlap < overlapThreshold) continue;
+          const rect = el.getBoundingClientRect();
+          const pos = posForRect(rect);
+          if (el instanceof HTMLImageElement) {
+            const rawUrl = el.currentSrc || el.src;
+            if (!rawUrl) continue;
+            const url = canonicalizeUrl(rawUrl);
+            if (existingUrls.has(url)) continue;
+            existingUrls.add(url);
+            if (el.naturalWidth <= 1 && el.naturalHeight <= 1) continue;
+            items.push({
+              id: idFor(url, idx++),
+              url,
+              originType: "img",
+              width: el.naturalWidth || void 0,
+              height: el.naturalHeight || void 0,
+              filenameHint: filenameFromUrl(url),
+              pageX: pos.pageX,
+              pageY: pos.pageY
+            });
+          } else if (el instanceof HTMLCanvasElement) {
+            try {
+              const dataUrl = el.toDataURL("image/png");
+              if (!existingUrls.has(dataUrl)) {
+                existingUrls.add(dataUrl);
+                items.push({
+                  id: idFor(dataUrl, idx++),
+                  url: dataUrl,
+                  originType: "canvas",
+                  isCanvas: true,
+                  isDataUrl: true,
+                  width: el.width,
+                  height: el.height,
+                  pageX: pos.pageX,
+                  pageY: pos.pageY
+                });
+              }
+            } catch {
+            }
+          } else if (el instanceof HTMLVideoElement && el.poster) {
+            const url = canonicalizeUrl(el.poster);
+            if (!existingUrls.has(url)) {
+              existingUrls.add(url);
+              items.push({
+                id: idFor(url, idx++),
+                url,
+                originType: "video-poster",
+                filenameHint: filenameFromUrl(url),
+                pageX: pos.pageX,
+                pageY: pos.pageY
+              });
+            }
+          } else if (el instanceof HTMLElement) {
+            const bg = getComputedStyle(el).backgroundImage;
+            if (bg && bg !== "none" && bg.includes("url(")) {
+              const bgCandidates = extractCssImageCandidates(bg);
+              for (const cand of bgCandidates) {
+                const url = canonicalizeUrl(cand.url);
+                if (existingUrls.has(url)) continue;
+                existingUrls.add(url);
+                items.push({
+                  id: idFor(url, idx++),
+                  url,
+                  originType: "css-background",
+                  filenameHint: filenameFromUrl(url),
+                  pageX: pos.pageX,
+                  pageY: pos.pageY
+                });
+              }
+            }
+            for (const attr of LAZY_ATTRS) {
+              const val = el.getAttribute(attr);
+              if (!val) continue;
+              const url = canonicalizeUrl(val);
+              if (existingUrls.has(url)) continue;
+              if (!looksLikeImageUrl(url, "lazy-attr")) continue;
+              existingUrls.add(url);
+              items.push({
+                id: idFor(url, idx++),
+                url,
+                originType: "lazy-attr",
+                filenameHint: filenameFromUrl(url),
+                lazyHint: true,
+                pageX: pos.pageX,
+                pageY: pos.pageY
+              });
+            }
+          }
+        } catch {
+        }
+      }
+    }
+    if (opts.deepScan && !isGlobalScan) {
+      try {
+        const stateUrls = extractFromPageStates();
+        const existingUrls = new Set(items.map((i) => i.url));
+        for (const rawUrl of stateUrls) {
+          const url = canonicalizeUrl(rawUrl);
+          if (existingUrls.has(url)) continue;
+          if (!looksLikeImageUrl(url, "data-attr")) continue;
+          let matched = false;
+          if (selBounds) {
+            const allImgs = document.querySelectorAll("img");
+            for (const img of Array.from(allImgs)) {
+              const imgUrl = canonicalizeUrl(img.currentSrc || img.src || "");
+              if (imgUrl !== url) continue;
+              const imgRect = getElementPageRect(img);
+              if (imgRect.width <= 0 || imgRect.height <= 0) continue;
+              const overlap = getOverlapRatio(selBounds, imgRect);
+              if (overlap >= overlapThreshold) {
+                matched = true;
+                existingUrls.add(url);
+                items.push({
+                  id: idFor(url, idx++),
+                  url,
+                  originType: "img",
+                  width: img.naturalWidth || void 0,
+                  height: img.naturalHeight || void 0,
+                  filenameHint: filenameFromUrl(url),
+                  pageX: imgRect.x,
+                  pageY: imgRect.y
+                });
+                break;
+              }
+            }
+          }
+          if (!matched && items.length < 3) {
+            existingUrls.add(url);
+            items.push({
+              id: idFor(url, idx++),
+              url,
+              originType: "data-attr",
+              filenameHint: filenameFromUrl(url)
+            });
+          }
+        }
+      } catch {
+      }
+    }
+    let result = items.filter((item) => {
       const url = item.url.toLowerCase();
       if (url.startsWith("data:")) {
         if (!opts.includeDataUrls) return false;
@@ -3230,7 +3842,7 @@
       if (url.endsWith(".svg") || url.includes("svg+xml")) return false;
       if (url.endsWith(".ico")) return false;
       if (item.originType === "img" || item.originType === "picture") {
-        if (item.width && item.width > 50 || item.height && item.height > 50) {
+        if (item.width && item.width > 1 || item.height && item.height > 1) {
           return true;
         }
       }
@@ -3243,6 +3855,96 @@
       }
       return item;
     }).filter((item, i, arr) => arr.findIndex((x) => x.url === item.url) === i);
+    if (selBounds && result.length > 1) {
+      const dimGroups = /* @__PURE__ */ new Map();
+      for (const item of result) {
+        if (!item.width || !item.height) continue;
+        let host = "";
+        try {
+          host = new URL(item.url).hostname;
+        } catch {
+        }
+        const key = `${item.width}x${item.height}@${host}`;
+        const group = dimGroups.get(key) || [];
+        group.push(item);
+        dimGroups.set(key, group);
+      }
+      const toRemove = /* @__PURE__ */ new Set();
+      for (const [, group] of dimGroups) {
+        if (group.length <= 1) continue;
+        group.sort((a, b) => computeSemanticScore(b, selBounds) - computeSemanticScore(a, selBounds));
+        for (let i = 1; i < group.length; i++) {
+          toRemove.add(group[i].id);
+        }
+      }
+      if (toRemove.size > 0) {
+        result = result.filter((item) => !toRemove.has(item.id));
+      }
+    }
+    if (opts.deepScan) {
+      await Promise.all(result.map(async (item) => {
+        if (item.url.startsWith("data:") || item.url.startsWith("blob:")) return;
+        const cleaned = cleanImageUrl(item.url);
+        if (!cleaned || cleaned === item.url) return;
+        try {
+          const fetchRes = await new Promise((resolve) => {
+            chrome.runtime.sendMessage({ type: "FETCH_SIZE", url: cleaned }, resolve);
+          });
+          if (fetchRes && fetchRes.bytes && fetchRes.bytes > 0) {
+            item.url = cleaned;
+            item.filenameHint = filenameFromUrl(cleaned) || item.filenameHint;
+          }
+        } catch {
+        }
+      }));
+    }
+    if (result.length === 0 && !isGlobalScan) {
+      const fallbackSeen = /* @__PURE__ */ new Set();
+      for (const root of roots) {
+        const imgs = root.querySelectorAll("img");
+        for (const img of Array.from(imgs)) {
+          const rawUrl = img.currentSrc || img.src;
+          if (!rawUrl) continue;
+          const url = canonicalizeUrl(rawUrl);
+          if (fallbackSeen.has(url)) continue;
+          fallbackSeen.add(url);
+          if (img.naturalWidth <= 1 && img.naturalHeight <= 1) continue;
+          result.push({
+            id: idFor(url, idx++),
+            url,
+            originType: "img",
+            width: img.naturalWidth || void 0,
+            height: img.naturalHeight || void 0,
+            filenameHint: filenameFromUrl(url),
+            pageX: img.getBoundingClientRect().left + window.scrollX,
+            pageY: img.getBoundingClientRect().top + window.scrollY
+          });
+        }
+        if (root instanceof HTMLElement) {
+          const style = getComputedStyle(root);
+          if (style.backgroundImage && style.backgroundImage !== "none" && style.backgroundImage.includes("url(")) {
+            const bgCandidates = extractCssImageCandidates(style.backgroundImage);
+            for (const cand of bgCandidates) {
+              const url = canonicalizeUrl(cand.url);
+              if (fallbackSeen.has(url)) continue;
+              fallbackSeen.add(url);
+              result.push({
+                id: idFor(url, idx++),
+                url,
+                originType: "css-background",
+                filenameHint: filenameFromUrl(url)
+              });
+            }
+          }
+        }
+      }
+    }
+    result.sort((a, b) => {
+      const scoreA = computeSemanticScore(a, selBounds);
+      const scoreB = computeSemanticScore(b, selBounds);
+      return scoreB - scoreA;
+    });
+    return result;
   }
 
   // src/utils/domUtils.ts
@@ -3279,9 +3981,9 @@
     '[class*="closeButton"]',
     '[class*="nav-arrow"]',
     '[class*="arrow"]',
-    '[class*="control"]',
-    "svg"
-    // Usually icons on overlays
+    '[class*="control"]'
+    // NOTE: 'svg' removed — too aggressive, penalised SVG icons inside real
+    // image containers causing legitimate images to be missed.
   ];
   var IMAGE_CONTAINER_SELECTORS = [
     "img",
@@ -3368,7 +4070,8 @@
     if (hasOverlayPositioning(el)) return true;
     const area = getVisualArea(el);
     const zIndex = getZIndex(el);
-    if (area < 1e4 && zIndex > 100) return true;
+    if (area < 3e3 && zIndex > 100) return true;
+    if (el instanceof SVGElement && area < 2500 && zIndex > 100) return true;
     return false;
   }
   function hasDirectImage(el) {
@@ -3711,11 +4414,27 @@
         if (style.content && style.content !== "none" && style.content.includes("url(")) return true;
       }
       return !!el.querySelector(IMAGE_HINT_SELECTOR);
+    }, isDirectImageElement = function(el) {
+      if (el instanceof HTMLImageElement) return true;
+      if (el instanceof HTMLCanvasElement) return true;
+      if (el instanceof HTMLVideoElement && el.poster) return true;
+      if (el instanceof HTMLPictureElement) return true;
+      if (el instanceof HTMLInputElement && el.type.toLowerCase() === "image") return true;
+      return false;
     }, findCaptureRoot = function(el) {
+      if (isDirectImageElement(el)) return el;
       let node = el;
       let depth = 0;
+      const origArea = el.getBoundingClientRect().width * el.getBoundingClientRect().height;
+      const origHasImages = hasImageHints(el);
       while (node && depth < 6) {
         if (node !== document.body && node !== document.documentElement && hasImageHints(node)) {
+          if (depth > 0 && origHasImages && origArea > 0) {
+            const nodeArea = node.getBoundingClientRect().width * node.getBoundingClientRect().height;
+            if (nodeArea > origArea * 2) {
+              return el;
+            }
+          }
           return node;
         }
         const parent = node.parentElement;
@@ -3746,7 +4465,21 @@
           }
         }
       }
-      return roots;
+      const validated = [];
+      for (let i = 0; i < roots.length; i++) {
+        const root = roots[i];
+        const orig = elements[Math.min(i, elements.length - 1)];
+        const origRect = orig.getBoundingClientRect();
+        const rootRect = root.getBoundingClientRect();
+        const origArea = origRect.width * origRect.height;
+        const rootArea = rootRect.width * rootRect.height;
+        if (origArea > 0 && rootArea > origArea * 2) {
+          validated.push(orig);
+        } else {
+          validated.push(root);
+        }
+      }
+      return validated.length > 0 ? validated : elements;
     }, ensureOverlay = function() {
       if (state.overlay) return;
       const shield = document.createElement("div");
@@ -3771,12 +4504,21 @@
       box.style.pointerEvents = "none";
       const tooltip = document.createElement("div");
       tooltip.style.position = "fixed";
-      tooltip.style.background = "#111";
-      tooltip.style.color = "#fff";
-      tooltip.style.padding = "4px 6px";
-      tooltip.style.font = "12px sans-serif";
+      tooltip.style.background = "rgba(17, 17, 23, 0.85)";
+      tooltip.style.backdropFilter = "blur(8px)";
+      tooltip.style["webkitBackdropFilter"] = "blur(8px)";
+      tooltip.style.color = "#e0e0e0";
+      tooltip.style.padding = "4px 8px";
+      tooltip.style.font = '11px/1.4 "Segoe UI", system-ui, sans-serif';
+      tooltip.style.borderRadius = "6px";
+      tooltip.style.border = "1px solid rgba(124, 77, 255, 0.3)";
+      tooltip.style.boxShadow = "0 2px 8px rgba(0,0,0,0.35)";
       tooltip.style.opacity = "0";
       tooltip.style.pointerEvents = "none";
+      tooltip.style.whiteSpace = "nowrap";
+      tooltip.style.display = "flex";
+      tooltip.style.alignItems = "center";
+      tooltip.style.gap = "6px";
       shadow.append(box, tooltip);
       document.documentElement.append(host);
       state.shield = shield;
@@ -3790,8 +4532,23 @@
       state.box.style.width = `${rect.width}px`;
       state.box.style.height = `${rect.height}px`;
       state.box.style.opacity = "1";
-      state.tooltip.textContent = `${Math.round(rect.width)}x${Math.round(rect.height)}`;
-      state.tooltip.style.transform = `translate(${rect.left}px, ${Math.max(0, rect.top - 22)}px)`;
+      const tagName = el.tagName.toLowerCase();
+      state.tooltip.innerHTML = "";
+      const tagBadge = document.createElement("span");
+      tagBadge.textContent = `<${tagName}>`;
+      tagBadge.style.color = "#b388ff";
+      tagBadge.style.fontWeight = "600";
+      tagBadge.style.fontSize = "10.5px";
+      tagBadge.style.letterSpacing = "0.3px";
+      const dimSpan = document.createElement("span");
+      dimSpan.textContent = `${Math.round(rect.width)} \xD7 ${Math.round(rect.height)}`;
+      dimSpan.style.color = "#80cbc4";
+      dimSpan.style.fontWeight = "500";
+      dimSpan.style.fontSize = "10.5px";
+      state.tooltip.append(tagBadge, dimSpan);
+      const tooltipH = 26;
+      const topPos = Math.max(0, rect.top - tooltipH - 4);
+      state.tooltip.style.transform = `translate(${rect.left}px, ${topPos}px)`;
       state.tooltip.style.opacity = "1";
     }, elementUnderPoint = function(x, y) {
       const excludeElements = [];
@@ -3885,7 +4642,7 @@
       state.overlay = void 0;
       state.shield = void 0;
     };
-    selectorFor2 = selectorFor, hasImageHints2 = hasImageHints, findCaptureRoot2 = findCaptureRoot, expandSelectionRoots2 = expandSelectionRoots, ensureOverlay2 = ensureOverlay, renderCurrent2 = renderCurrent, elementUnderPoint2 = elementUnderPoint, onMove2 = onMove, onKey2 = onKey, stopEvents2 = stopEvents, activate2 = activate, deactivate2 = deactivate;
+    selectorFor2 = selectorFor, hasImageHints2 = hasImageHints, isDirectImageElement2 = isDirectImageElement, findCaptureRoot2 = findCaptureRoot, expandSelectionRoots2 = expandSelectionRoots, ensureOverlay2 = ensureOverlay, renderCurrent2 = renderCurrent, elementUnderPoint2 = elementUnderPoint, onMove2 = onMove, onKey2 = onKey, stopEvents2 = stopEvents, activate2 = activate, deactivate2 = deactivate;
     window.__madcapture_selector_booted__ = true;
     const state = { active: false, locked: [] };
     const IMAGE_HINT_SELECTOR = [
@@ -3916,7 +4673,34 @@
       try {
         const options = state.extractOptions ?? normalizeExtractOptions();
         const roots = expandSelectionRoots(state.locked);
-        const images = await extractImagesFromRoots(roots, options);
+        let selBounds;
+        if (state.locked.length > 0) {
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+          for (const el of state.locked) {
+            const r = el.getBoundingClientRect();
+            if (!r.width && !r.height) continue;
+            const px = r.left + window.scrollX;
+            const py = r.top + window.scrollY;
+            minX = Math.min(minX, px);
+            minY = Math.min(minY, py);
+            maxX = Math.max(maxX, px + r.width);
+            maxY = Math.max(maxY, py + r.height);
+          }
+          if (Number.isFinite(minX)) {
+            const padX = (maxX - minX) * 0.02;
+            const padY = (maxY - minY) * 0.02;
+            selBounds = {
+              x: minX - padX,
+              y: minY - padY,
+              width: maxX - minX + padX * 2,
+              height: maxY - minY + padY * 2
+            };
+          }
+        }
+        const images = await extractImagesFromRoots(roots, {
+          ...options,
+          selectionBounds: selBounds
+        });
         chrome.runtime.sendMessage({ type: "SELECTION_LOCKED", payload, images });
       } catch (error) {
         chrome.runtime.sendMessage({
@@ -3973,6 +4757,7 @@
   }
   var selectorFor2;
   var hasImageHints2;
+  var isDirectImageElement2;
   var findCaptureRoot2;
   var expandSelectionRoots2;
   var ensureOverlay2;

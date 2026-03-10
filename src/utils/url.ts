@@ -1,6 +1,7 @@
-export function canonicalizeUrl(input: string, base = location.href): string {
+export function canonicalizeUrl(input: string, base?: string): string {
+  const resolvedBase = base ?? (typeof document !== 'undefined' ? document.baseURI : location.href);
   try {
-    const u = new URL(input, base);
+    const u = new URL(input, resolvedBase);
     u.hash = '';
     return u.toString();
   } catch {

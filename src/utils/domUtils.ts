@@ -44,7 +44,8 @@ const OVERLAY_CONTROL_SELECTORS = [
   '[class*="nav-arrow"]',
   '[class*="arrow"]',
   '[class*="control"]',
-  'svg', // Usually icons on overlays
+  // NOTE: 'svg' removed — too aggressive, penalised SVG icons inside real
+  // image containers causing legitimate images to be missed.
 ];
 
 /**
@@ -178,7 +179,11 @@ export function isOverlayElement(el: Element): boolean {
   // Check if it's a small element with high z-index (likely a control)
   const area = getVisualArea(el);
   const zIndex = getZIndex(el);
-  if (area < 10000 && zIndex > 100) return true; // Small element, high z-index
+  // Tightened from 10000 to 3000: 100×100 is a real thumbnail, 55×55 is a control
+  if (area < 3000 && zIndex > 100) return true;
+  
+  // Small SVG icons with high z-index are likely overlay controls
+  if (el instanceof SVGElement && area < 2500 && zIndex > 100) return true;
   
   return false;
 }

@@ -1,2 +1,11 @@
 OtherExtention/*
 LLM/*
+node_modules/*
+.git/*
+.vscode/*
+.idea/*
+.DS_Store
+*.log
+
+build/*
+dist/*

@@ -150,6 +150,28 @@ function endSearch() {
   if (searchTimeoutId) window.clearTimeout(searchTimeoutId);
 }
 
+/** User-initiated cancel: stop searching, show whatever we have so far */
+function cancelSearch() {
+  ++searchToken; // Invalidate any pending search/processing callbacks
+  endSearch();
+  
+  state.processing = false;
+  pendingBatches.length = 0; // clear queue
+  
+  state.status = state.items.length > 0
+    ? `Cancelled — ${state.items.length} image(s) found`
+    : 'Search cancelled';
+  state.statusLevel = 'warn';
+  render();
+  setTimeout(() => {
+    if (!state.searching && !state.processing) {
+      state.status = 'Ready';
+      state.statusLevel = 'info';
+      render();
+    }
+  }, 2000);
+}
+
 async function loadSettings() {
   const data = await chrome.storage.local.get([
     "naming",
@@ -261,19 +283,7 @@ function render(): void {
         `
             : ""
         }
-      </div>
-    `;
-  } else if (state.showLogs) {
-    mainHtml = `
-      <div class="log-viewer">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-          <h3 style="margin: 0; font-size: 14px;">Debug Logs</h3>
-          <div style="display: flex; gap: 8px;">
-            <button class="secondary" id="clearLogsBtn" style="padding: 2px 8px; font-size: 11px;">Clear</button>
-            <button class="secondary" id="closeLogsBtn" style="padding: 2px 8px; font-size: 11px;">Close</button>
-          </div>
-        </div>
-        <div class="log-content" id="log-list">Loading logs...</div>
+        ${state.searching || state.processing ? `<button class="secondary" id="cancelSearch" style="margin-top: 12px; padding: 4px 14px; font-size: 11px; opacity: 0.8;"><i class="fa-solid fa-xmark"></i> Cancel</button>` : ""}
       </div>
     `;
   } else if (state.items.length === 0) {
@@ -285,6 +295,20 @@ function render(): void {
   } else {
     mainHtml = renderImageGrid(state.items, state.selected, state.highlighted);
   }
+
+  // Logs overlay — rendered ON TOP of the grid, not replacing it
+  const logsOverlayHtml = state.showLogs ? `
+    <div class="log-overlay" id="logOverlay" style="position: absolute; inset: 0; z-index: 9999; background: rgba(10,10,15,0.95); backdrop-filter: blur(6px); overflow-y: auto; padding: 12px; border-radius: 8px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <h3 style="margin: 0; font-size: 14px;">Debug Logs</h3>
+        <div style="display: flex; gap: 8px;">
+          <button class="secondary" id="clearLogsBtn" style="padding: 2px 8px; font-size: 11px;">Clear</button>
+          <button class="secondary" id="closeLogsBtn" style="padding: 2px 8px; font-size: 11px;">Close</button>
+        </div>
+      </div>
+      <div class="log-content" id="log-list">Loading logs...</div>
+    </div>
+  ` : '';
 
   const wasGrid = !!main.querySelector(".grid");
   const isGrid = !isBusy && state.items.length > 0;
@@ -353,6 +377,14 @@ function render(): void {
   } else if (isGrid) {
     syncGridState();
   }
+  // Append/remove logs overlay on top of whatever is in main
+  let existingOverlay = main.querySelector('#logOverlay');
+  if (state.showLogs && !existingOverlay) {
+    (main as HTMLElement).style.position = 'relative';
+    main.insertAdjacentHTML('beforeend', logsOverlayHtml);
+  } else if (!state.showLogs && existingOverlay) {
+    existingOverlay.remove();
+  }
   if (isGrid) wirePreviewFallbacks();
 
   footer.innerHTML = `
@@ -381,6 +413,106 @@ function render(): void {
   `;
 
   wireDynamicEvents();
+}
+
+// === CONTEXT MENU HELPERS ===
+function hideContextMenu() {
+  document.querySelector('.ctx-menu')?.remove();
+}
+
+function showContextMenu(e: MouseEvent, id: string) {
+  hideContextMenu();
+  const item = state.items.find(i => i.id === id);
+  if (!item) return;
+
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+  menu.innerHTML = `
+    <div class="ctx-menu-item" data-action="open"><i class="fa-solid fa-arrow-up-right-from-square"></i> Open in New Tab</div>
+    <div class="ctx-menu-item danger" data-action="remove"><i class="fa-solid fa-trash-can"></i> Remove</div>
+    <div class="ctx-menu-sep"></div>
+    <div class="ctx-menu-item" data-action="info"><i class="fa-solid fa-circle-info"></i> Show Info</div>  
+  `;
+
+  // Position: keep within viewport
+  const x = Math.min(e.clientX, window.innerWidth - 170);
+  const y = Math.min(e.clientY, window.innerHeight - 120);
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+
+  menu.addEventListener('click', (ev) => {
+    const action = (ev.target as HTMLElement).closest('.ctx-menu-item')?.getAttribute('data-action');
+    hideContextMenu();
+    if (action === 'info') showImageInfo(item);
+    else if (action === 'open') {
+      if (item.url && !item.url.startsWith('data:')) window.open(item.url, '_blank');
+      else if (item.previewUrl) window.open(item.previewUrl, '_blank');
+    }
+    else if (action === 'remove') removeImage(id);
+  });
+
+  document.body.appendChild(menu);
+}
+
+function showImageInfo(item: ExtractedImage) {
+  const dimText = item.width && item.height ? `${item.width} × ${item.height}` : 'Unknown';
+  const sizeText = item.bytes ? `${(item.bytes / 1024).toFixed(1)} KB` : 'Unknown';
+  let format = '—';
+  if (item.url.startsWith('data:')) {
+    const m = item.url.match(/^data:image\/(\w+)/);
+    format = m ? m[1].toUpperCase() : 'DATA';
+  } else {
+    try {
+      const pathname = new URL(item.url).pathname.toLowerCase();
+      const ext = pathname.match(/\.(\w{2,5})$/);
+      if (ext) format = ext[1].toUpperCase();
+      else {
+        const params = new URL(item.url).searchParams;
+        for (const k of ['fm', 'format', 'ext']) {
+          const v = params.get(k);
+          if (v) { format = v.toUpperCase(); break; }
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  const urlDisplay = item.url.startsWith('data:')
+    ? 'Data URL (embedded)'
+    : `<a href="${item.url}" target="_blank" title="${item.url}">${item.url.length > 60 ? item.url.slice(0, 60) + '…' : item.url}</a>`;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'info-modal-overlay';
+  overlay.innerHTML = `
+    <div class="info-modal">
+      <h3><i class="fa-solid fa-circle-info"></i> Image Info</h3>
+      <div class="info-row"><span class="info-label">Dimensions</span><span class="info-value">${dimText}</span></div>
+      <div class="info-row"><span class="info-label">Format</span><span class="info-value">${format}</span></div>
+      <div class="info-row"><span class="info-label">File Size</span><span class="info-value">${sizeText}</span></div>
+      <div class="info-row"><span class="info-label">Origin</span><span class="info-value">${item.originType}</span></div>
+      <div class="info-row"><span class="info-label">Filename</span><span class="info-value">${item.filenameHint || '—'}</span></div>
+      <div class="info-row"><span class="info-label">Source</span><span class="info-value">${urlDisplay}</span></div>
+      <button class="secondary close-info">Close</button>
+    </div>
+  `;
+
+  overlay.addEventListener('click', (ev) => {
+    if ((ev.target as HTMLElement).classList.contains('info-modal-overlay') ||
+        (ev.target as HTMLElement).classList.contains('close-info')) {
+      overlay.remove();
+    }
+  });
+
+  document.body.appendChild(overlay);
+}
+
+function removeImage(id: string) {
+  const item = state.items.find(i => i.id === id);
+  if (item?.previewUrl) URL.revokeObjectURL(item.previewUrl);
+  state.items = state.items.filter(i => i.id !== id);
+  state.selected.delete(id);
+  state.selectionOrder = state.selectionOrder.filter(x => x !== id);
+  state.highlighted.delete(id);
+  render();
 }
 
 function wireStaticEvents(): void {
@@ -427,9 +559,32 @@ function wireStaticEvents(): void {
     void locateImageOnPage(item);
   });
 
+  // === RIGHT-CLICK CONTEXT MENU ===
+  main.addEventListener("contextmenu", (e) => {
+    const card = (e.target as HTMLElement).closest(".card") as HTMLElement | null;
+    if (!card) return;
+    e.preventDefault();
+    const id = card.dataset.id;
+    if (!id) return;
+    showContextMenu(e as MouseEvent, id);
+  });
+
+  document.addEventListener("click", () => hideContextMenu());
+  document.addEventListener("contextmenu", (e) => {
+    // Hide if right-click is outside cards
+    if (!(e.target as HTMLElement).closest(".card") && !(e.target as HTMLElement).closest(".ctx-menu")) {
+      hideContextMenu();
+    }
+  });
+
   window.addEventListener(
     "keydown",
     (ev) => {
+      if (ev.key === "Escape") {
+        hideContextMenu();
+        const infoOverlay = document.querySelector('.info-modal-overlay');
+        if (infoOverlay) infoOverlay.remove();
+      }
       if (ev.altKey && ev.code === "KeyS") {
         ev.preventDefault();
         ev.stopPropagation();
@@ -457,24 +612,27 @@ function wireStaticEvents(): void {
   document.addEventListener("click", (ev) => {
     const target = ev.target as HTMLElement;
     const settingsPanel = document.querySelector(".settings-panel");
-    const logPanel = document.querySelector(".log-viewer");
+    const settingsContainer = document.querySelector("#settings-container");
+    const logOverlay = document.querySelector("#logOverlay");
     const settingsToggle = document.querySelector("#settingsToggle");
-    const viewLogsBtn = document.querySelector("#viewLogs");
 
+    // Close settings only when clicking OUTSIDE the entire settings panel/container
+    // and outside the settings gear button
     if (
       state.settingsOpen &&
       settingsPanel &&
       !settingsPanel.contains(target) &&
+      !settingsContainer?.contains(target) &&
       !settingsToggle?.contains(target)
     ) {
       state.settingsOpen = false;
       render();
     }
+    // Close logs when clicking outside the log overlay
     if (
       state.showLogs &&
-      logPanel &&
-      !logPanel.contains(target) &&
-      !viewLogsBtn?.contains(target)
+      logOverlay &&
+      !logOverlay.contains(target)
     ) {
       state.showLogs = false;
       render();
@@ -553,6 +711,10 @@ function wireDynamicEvents(): void {
         }
       }, 2000);
     }
+  });
+
+  document.querySelector("#cancelSearch")?.addEventListener("click", () => {
+    cancelSearch();
   });
 
   document
@@ -714,21 +876,53 @@ async function ensurePreview(item: ExtractedImage): Promise<void> {
   if (previewRequests.has(item.id)) return;
   if (item.url.startsWith("data:")) return;
   previewRequests.add(item.id);
-  try {
-    await addLog(`Preview fallback: fetching bytes for ${item.url}`);
+
+  const tryFetch = async (url: string): Promise<Uint8Array | null> => {
     const fetched = await chrome.runtime.sendMessage({
       type: "FETCH_BYTES",
-      url: item.url,
+      url,
     });
-    if (!fetched?.ok || !fetched.bytes) {
-      await addLog(
-        `Preview fallback failed for ${item.url}: ${fetched?.error || "no bytes"}`,
-      );
+    if (fetched?.ok && fetched.bytes) return new Uint8Array(fetched.bytes);
+    return null;
+  };
+
+  try {
+    await addLog(`Preview fallback: fetching bytes for ${item.url}`);
+
+    // Try the full URL first
+    let bytes = await tryFetch(item.url);
+
+    // If that fails, try stripping query params (CDN often serves original without params)
+    if (!bytes) {
+      try {
+        const parsed = new URL(item.url);
+        if (parsed.search) {
+          const strippedUrl = parsed.origin + parsed.pathname;
+          await addLog(`Preview retry with stripped URL: ${strippedUrl}`);
+          bytes = await tryFetch(strippedUrl);
+        }
+      } catch { /* ignore URL parse error */ }
+    }
+
+    if (!bytes) {
+      await addLog(`Preview fallback failed for ${item.url}`);
+      // Show a placeholder SVG for broken previews
+      const card = document.querySelector(`.card[data-id="${item.id}"] img`) as HTMLImageElement | null;
+      if (card) {
+        card.src = 'data:image/svg+xml,' + encodeURIComponent(
+          `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
+            <rect width="100" height="100" fill="#1a1a1c"/>
+            <text x="50" y="45" text-anchor="middle" fill="#555" font-size="24">🖼</text>
+            <text x="50" y="65" text-anchor="middle" fill="#555" font-size="8">Preview unavailable</text>
+          </svg>`
+        );
+        card.style.objectFit = 'contain';
+      }
       return;
     }
-    const bytes = new Uint8Array(fetched.bytes);
+
     const mime = guessMimeFromUrl(item.url);
-    const blob = new Blob([bytes], { type: mime });
+    const blob = new Blob([bytes as unknown as BlobPart], { type: mime });
     const blobUrl = URL.createObjectURL(blob);
     if (item.previewUrl?.startsWith("blob:")) {
       URL.revokeObjectURL(item.previewUrl);
@@ -960,9 +1154,14 @@ async function processNewItemsBatch(items: ExtractedImage[]): Promise<void> {
   state.statusLevel = "info";
   render();
 
+  const currentToken = searchToken;
+
   for (let i = 0; i < items.length; i++) {
+    if (searchToken !== currentToken) return; // Cancelled
     await hydrateItem(items[i], i, items.length);
   }
+  
+  if (searchToken !== currentToken) return; // Cancelled
 
   const filtered = state.smartFilter
     ? applySmartFilter(items)

@@ -40,6 +40,9 @@ export interface ExtractOptions {
   viewportPadding?: number;
   includeDataUrls?: boolean;
   includeBlobUrls?: boolean;
+  /** Bounding box of the user-selected area (page coordinates). When set, only
+   *  elements whose visual rect overlaps this box will be extracted. */
+  selectionBounds?: { x: number; y: number; width: number; height: number };
 }
 
 export interface SelectionPayload {
