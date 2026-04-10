@@ -259,9 +259,14 @@ function render(): void {
       <button class="secondary icon-btn" id="clearAll" title="Clear Grid">
         <i class="fa-solid fa-rotate-left"></i>
       </button>
-      <button class="secondary icon-btn" id="downloadTask" title="Download Selected">
-        <i class="fa-solid fa-download"></i>
-      </button>
+      <div class="download-group">
+        <button class="secondary icon-btn" id="downloadTask" title="Download Each Selected">
+          <i class="fa-solid fa-download"></i>
+        </button>
+        <button class="secondary icon-btn" id="downloadZipTask" title="Download as ZIP">
+          <i class="fa-solid fa-file-zipper"></i>
+        </button>
+      </div>
     </div>
   `;
 
@@ -763,6 +768,10 @@ function wireDynamicEvents(): void {
     ?.addEventListener("click", () => void startDownload());
 
   document
+    .querySelector("#downloadZipTask")
+    ?.addEventListener("click", () => void startZipDownload());
+
+  document
     .querySelector("#toggleSelectedFilter")
     ?.addEventListener("click", () => {
       state.filterSelected = !state.filterSelected;
@@ -1107,6 +1116,84 @@ async function startDownload(): Promise<void> {
       render();
     }
   }, 2000);
+}
+
+async function startZipDownload(): Promise<void> {
+  if (state.processing || state.searching) return;
+  const selected = currentSelection();
+  if (!selected.length) return;
+  
+  state.status = "Preparing ZIP archive...";
+  state.statusLevel = "info";
+  state.processing = true;
+  state.progress = 0;
+  render();
+
+  try {
+    const zipItems: Array<{ filename: string; bytes: number[] }> = [];
+    const nameCache: Record<string, string[]> = {};
+
+    for (let i = 0; i < selected.length; i++) {
+      const item = selected[i];
+      state.status = `Preparing ${i + 1}/${selected.length}`;
+      state.progress = Math.round((i / selected.length) * 100);
+      render();
+
+      const targetExt = resolveTargetExt(item);
+      if (!nameCache[targetExt]) {
+        nameCache[targetExt] = buildFilenames(selected.length, state.naming, targetExt);
+      }
+      let filename = nameCache[targetExt][i];
+
+      const fetched = await chrome.runtime.sendMessage({
+        type: "FETCH_BYTES",
+        url: item.url,
+      });
+      if (!fetched.ok) throw new Error(fetched.error);
+      
+      let bytes = new Uint8Array(fetched.bytes).buffer;
+      if (state.format !== "original") {
+        bytes = await convertBytes(item.id, bytes);
+      }
+      
+      zipItems.push({
+        filename,
+        bytes: Array.from(new Uint8Array(bytes))
+      });
+    }
+
+    state.status = "Creating ZIP...";
+    state.progress = 95;
+    render();
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const zipName = state.naming.folderName?.trim() 
+      ? `${state.naming.folderName.trim().replace(/[<>:"|?*]/g, '_')}.zip`
+      : `MadCapture-${timestamp}.zip`;
+
+    await chrome.runtime.sendMessage({
+      type: "DOWNLOAD_ZIP",
+      items: zipItems,
+      zipName
+    });
+
+    state.status = "ZIP Downloaded";
+    state.statusLevel = "info";
+  } catch (err) {
+    console.error("Zip download failed:", err);
+    state.status = "Zip failed";
+    state.statusLevel = "error";
+  } finally {
+    state.processing = false;
+    state.progress = 0;
+    render();
+    setTimeout(() => {
+      if (!state.searching && !state.processing && (state.status === "ZIP Downloaded" || state.status === "Zip failed")) {
+        state.status = "Ready";
+        render();
+      }
+    }, 2000);
+  }
 }
 
 async function hydrateItem(
