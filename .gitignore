@@ -1,11 +1,21 @@
-OtherExtention/*
-LLM/*
-node_modules/*
-.git/*
-.vscode/*
-.idea/*
-.DS_Store
-*.log
+# Dependencies
+node_modules/
 
-build/*
-dist/*
+# Production builds
+build/
+dist/
+
+# Development & Temp Scripts
+esbuild-error.txt
+recover.py
+*.log
+LLM/
+OtherExtention/
+
+# Editor/IDE
+.vscode/
+.idea/
+
+# OS specific
+.DS_Store
+Thumbs.db
